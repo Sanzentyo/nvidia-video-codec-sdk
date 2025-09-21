@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[cfg(unix)]
 const NVENC_LIB: (&str, &str) = ("nvidia-encode", "libnvidia-encode.so");
 #[cfg(windows)]
-const NVENC_LIB: (&str, &str) = ("nvencodeapi", "nvEncodeAPI.lib");
+const NVENC_LIB: (&str, &str) = ("nvencodeapi", "nvencodeapi.lib");
 
 /// <a href="https://docs.nvidia.com/video-technologies/video-codec-sdk/12.0/
 /// nvdec-video-decoder-api-prog-guide/index.html#
