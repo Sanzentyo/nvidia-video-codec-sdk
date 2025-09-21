@@ -38,14 +38,15 @@ use crate::sys::nvEncodeAPI::{
     NV_ENC_TUNING_INFO,
 };
 
-lazy_static! {
-    /// A lazy static for the Encoder API.
-    ///
-    /// You should not interact with this directly.
-    /// [`Encoder`](crate::Encoder) exposes much of the functionality and provides a nicer API.
-    pub static ref ENCODE_API: EncodeAPI =
-        EncodeAPI::new();
-}
+
+use std::sync::LazyLock;
+/// A lazy static for the Encoder API.
+///
+/// You should not interact with this directly.
+/// [`Encoder`](crate::Encoder) exposes much of the functionality and provides a nicer API.
+pub static ENCODE_API: LazyLock<EncodeAPI> = LazyLock::new(|| {
+        EncodeAPI::new()
+});
 
 // Function type aliases to shorten later definitions.
 type OpenEncodeSession = unsafe extern "C" fn(*mut c_void, u32, *mut *mut c_void) -> NVENCSTATUS;

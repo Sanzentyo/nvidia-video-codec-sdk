@@ -19,7 +19,6 @@ features = ["ci-check"]
 
 [dependencies]
 cudarc = { version = "0.16.4", features = ["cuda-version-from-build-system"] }
-lazy_static = "1.5.0"
 
 [dev-dependencies]
 vulkano = "0.35.0"
