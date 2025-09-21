@@ -1,12 +1,11 @@
 use std::{
     fs::{File, OpenOptions},
     io::Write,
-    ptr::{self, NonNull},
+    ptr::NonNull,
     sync::Arc,
 };
 
 use cudarc::driver::CudaContext;
-use libc::munmap;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB,
@@ -18,6 +17,7 @@ use nvidia_video_codec_sdk::{
     Encoder,
     EncoderInitParams,
 };
+use vulkano::VulkanObject;
 use vulkano::{
     device::{
         physical::PhysicalDeviceType,
@@ -30,7 +30,6 @@ use vulkano::{
     instance::{Instance, InstanceCreateInfo},
     memory::{
         DeviceMemory,
-        ExternalMemoryHandleType,
         ExternalMemoryHandleTypes,
         MappedMemoryRange,
         MemoryAllocateInfo,
@@ -40,6 +39,11 @@ use vulkano::{
     },
     VulkanLibrary,
 };
+
+#[cfg(windows)]
+use ash::vk;
+#[cfg(windows)]
+use std::os::windows::io::FromRawHandle;
 
 /// Returns the color `(r, g, b, alpha)` of a pixel on the screen relative to
 /// its position on a screen:
@@ -85,9 +89,6 @@ fn generate_test_input(buf: &mut [u8], width: u32, height: u32, i: u32, i_max: u
 
 /// Initialize Vulkan and find the desired memory type index.
 ///
-/// This function will probably only work on UNIX because we require the
-/// `khr_external_memory_fd` extension to export Opaque File Descriptors.
-///
 /// The `memory_type_index` corresponds to the memory type which is
 /// `HOST_VISIBLE`  which is needed so that we can map device memory later in
 /// the example.
@@ -123,21 +124,75 @@ fn initialize_vulkan() -> (Arc<Device>, u32) {
         );
 
     // Create a Vulkan device.
-    let (vulkan_device, _queues) = Device::new(physical_device, DeviceCreateInfo {
-        queue_create_infos: vec![QueueCreateInfo::default()],
-        enabled_extensions: DeviceExtensions {
-            khr_external_memory_fd: true,
-            ..Default::default()
-        },
-        enabled_features: DeviceFeatures {
-            memory_map_placed: true,
-            ..Default::default()
-        },
+    // Pick an external-memory extension based on what the physical device actually supports.
+    let physical_device_name = physical_device.properties().device_name.clone();
+    
+    let mut enabled_exts = DeviceExtensions::default();
+    #[cfg(unix)]
+    let (supports_fd, chosen_ext_name) = {
+        let supports_fd = physical_device
+            .supported_extensions()
+            .khr_external_memory_fd;
+        assert!(supports_fd, "The physical device should support khr_external_memory_fd on unix");
+        enabled_exts.khr_external_memory = true;
+        enabled_exts.khr_external_memory_fd = true;
+        let chosen_ext_name = "khr_external_memory_fd";
+        (supports_fd, chosen_ext_name)
+    };
+    #[cfg(windows)]
+    let (supports_win32, chosen_ext_name) = {
+        let supports_win32 = physical_device
+            .supported_extensions()
+            .khr_external_memory_win32;
+        assert!(supports_win32, "The physical device should support khr_external_memory_win32 on windows");
+        enabled_exts.khr_external_memory = true;
+        enabled_exts.khr_external_memory_win32 = true;
+        let chosen_ext_name = "khr_external_memory_win32";
+        (supports_win32, chosen_ext_name)
+    };
+
+    // Try to create the device and provide richer diagnostics on failure.
+    let supported_features = physical_device.supported_features();
+    let enabled_features = DeviceFeatures {
+        memory_map_placed: supported_features.memory_map_placed,
         ..Default::default()
-    })
-    .expect(
-        "Vulkan should be installed correctly and `Device` should support `khr_external_memory_fd`",
-    );
+    };
+
+    let device_create_info = DeviceCreateInfo {
+        queue_create_infos: vec![QueueCreateInfo::default()],
+        enabled_extensions: enabled_exts,
+        enabled_features,
+        ..Default::default()
+    };
+
+    let (vulkan_device, _queues) = match Device::new(physical_device, device_create_info) {
+        Ok((dev, queues)) => (dev, queues),
+        Err(err) => {
+            eprintln!("Failed to create device: {:?}", err);
+            #[cfg(unix)]
+            eprintln!(
+                "Physical device '{}' supported extensions: khr_external_memory_fd={}",
+                physical_device_name,
+                supports_fd
+            );
+            #[cfg(windows)]
+            eprintln!(
+                "Physical device '{}' supported extensions: khr_external_memory_win32={}",
+                physical_device_name,
+                supports_win32
+            );
+            eprintln!(
+                "DeviceCreateInfo requested extensions: khr_external_memory={} khr_external_memory_fd={} khr_external_memory_win32={}",
+                enabled_exts.khr_external_memory,
+                enabled_exts.khr_external_memory_fd,
+                enabled_exts.khr_external_memory_win32
+            );
+            panic!(
+                "Vulkan should be installed correctly and device should support selected extension: {}",
+                chosen_ext_name
+            )
+        }
+    };
 
     (vulkan_device, memory_type_index)
 }
@@ -255,7 +310,7 @@ fn main() {
 
         // Import file descriptor using CUDA.
         let external_memory = unsafe {
-            cuda_ctx.import_external_memory(file_descriptor, (WIDTH * HEIGHT * 4) as u64)
+            cuda_ctx.import_external_memory(file_descriptor.into(), (WIDTH * HEIGHT * 4) as u64)
         }
         .expect("File descriptor should be valid for importing.");
         let mapped_buffer = external_memory
@@ -316,70 +371,143 @@ fn create_buffer(
     let size = (width * height * 4) as u64;
 
     // Allocate memory with Vulkan.
-    let mut memory = DeviceMemory::allocate(vulkan_device, MemoryAllocateInfo {
-        allocation_size: size,
-        memory_type_index,
-        export_handle_types: ExternalMemoryHandleTypes::OPAQUE_FD,
-        ..Default::default()
+    let mut memory = DeviceMemory::allocate(vulkan_device.clone(), MemoryAllocateInfo {
+            allocation_size: size,
+            memory_type_index,
+            #[cfg(unix)]
+            export_handle_types: ExternalMemoryHandleTypes::OPAQUE_FD,
+            #[cfg(windows)]
+            export_handle_types: ExternalMemoryHandleTypes::OPAQUE_WIN32,
+            ..Default::default()
     })
     .expect("There should be space to allocate vulkan memory on the device");
 
     // Map and write to the memory.
-    let address = unsafe {
-        libc::mmap(
-            ptr::null_mut(),
-            memory.allocation_size() as libc::size_t,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_PRIVATE | libc::MAP_ANONYMOUS,
-            -1,
-            0,
-        )
-    };
-    if address as i64 == -1 {
-        panic!("There should be memory available to map and write to");
-    }
+    // If memory_map_placed is supported, reserve an address and map there.
+    // Otherwise, use the pointer returned by Vulkan's mapping state.
+    let placed_supported = vulkan_device
+        .physical_device()
+        .supported_features()
+        .memory_map_placed;
 
-    unsafe {
-        memory.map_placed(
-            MemoryMapInfo {
-                flags: MemoryMapFlags::PLACED,
+    let write_ptr: *mut std::ffi::c_void = if placed_supported {
+        let mmap_mut = memmap2::MmapOptions::new()
+            .len(memory.allocation_size() as usize)
+            .map_anon()
+            .expect("Mapping anonymous memory should work");
+        let address = mmap_mut.as_ptr() as *mut std::ffi::c_void;
+
+        // Keep the mmap alive until after unmap by binding it in the same scope.
+        unsafe {
+            memory.map_placed(
+                MemoryMapInfo {
+                    flags: MemoryMapFlags::PLACED,
+                    size: memory.allocation_size(),
+                    ..Default::default()
+                },
+                NonNull::new(address).expect("The mapped address should not be null"),
+            )
+        }
+        .unwrap();
+
+        // Write using the placed address
+        // Note: `mmap_mut` must live until after unmap; ensure scope encloses writes and unmap.
+        let content = unsafe {
+            std::slice::from_raw_parts_mut(address as *mut u8, memory.allocation_size() as usize)
+        };
+        generate_test_input(content, width, height, i, i_max);
+
+        // Flush host writes
+        unsafe {
+            memory
+                .flush_range(MappedMemoryRange {
+                    offset: 0,
+                    size,
+                    ..Default::default()
+                })
+                .expect("Flush should succeed for host-visible memory");
+        }
+
+        // Unmap before `mmap_mut` drops
+        memory
+            .unmap(Default::default())
+            .expect("unmap should be sucessful on host-mapped device");
+
+        // Return value unused in placed branch after unmap; set to null.
+        std::ptr::null_mut()
+    } else {
+        memory
+            .map(MemoryMapInfo {
+                flags: MemoryMapFlags::empty(),
                 size: memory.allocation_size(),
                 ..Default::default()
-            },
-            NonNull::new(address).expect("The mapped address should not be null"),
-        )
-    }
-    .unwrap();
-
-    unsafe {
-        let content =
-            std::slice::from_raw_parts_mut(address as *mut u8, memory.allocation_size() as usize);
-        generate_test_input(content, width, height, i, i_max);
-        memory
-            .flush_range(MappedMemoryRange {
-                offset: 0,
-                size,
-                ..Default::default()
             })
-            .expect(
-                "There should be no other devices writing to this memory and size should also fit \
-                 within the size",
+            .unwrap();
+
+        let ptr = memory
+            .mapping_state()
+            .expect("memory should be mapped")
+            .ptr()
+            .as_ptr();
+
+        let content = unsafe {
+            std::slice::from_raw_parts_mut(ptr as *mut u8, memory.allocation_size() as usize)
+        };
+        generate_test_input(content, width, height, i, i_max);
+
+        unsafe {
+            memory
+                .flush_range(MappedMemoryRange {
+                    offset: 0,
+                    size,
+                    ..Default::default()
+                })
+                .expect("Flush should succeed for host-visible memory");
+        }
+
+        // Unmap after writes
+        memory
+            .unmap(Default::default())
+            .expect("unmap should be sucessful on host-mapped device");
+
+        ptr
+    };
+
+    let _ = write_ptr; // silence unused in placed branch
+
+    // Export the memory. On Windows export a Win32 HANDLE and wrap into File; on Unix export an FD.
+    #[cfg(unix)]
+    {
+        memory
+            .export_fd(vulkano::memory::ExternalMemoryHandleType::OpaqueFd)
+            .expect("The memory should be exportable as an OpaqueFd on UNIX")
+    }
+
+    #[cfg(windows)]
+    {
+        use std::mem::MaybeUninit;
+        let info_vk = vk::MemoryGetWin32HandleInfoKHR::default()
+            .memory(memory.handle())
+            .handle_type(vk::ExternalMemoryHandleTypeFlags::OPAQUE_WIN32);
+
+        let fns = vulkan_device.fns();
+        let mut output = MaybeUninit::<vk::HANDLE>::uninit();
+        let result = unsafe {
+            (fns.khr_external_memory_win32.get_memory_win32_handle_khr)(
+                vulkan_device.handle(),
+                &info_vk,
+                output.as_mut_ptr(),
+            )
+        };
+        if result != vk::Result::SUCCESS {
+            panic!(
+                "The memory should be exportable as an OpaqueWin32 handle on Windows: {:?}",
+                result
             );
+        }
+        let raw_handle = unsafe { output.assume_init() };
+        // SAFETY: OPAQUE_WIN32 requires the caller to close the handle. Wrapping in File transfers
+        // ownership and ensures CloseHandle is called on drop.
+        unsafe { File::from_raw_handle(raw_handle as _) }
     }
-
-    // unmap from the host size
-    let result = unsafe { munmap(address, size as libc::size_t) };
-    if result == -1 {
-        panic!("munmap failed");
-    }
-
-    // unmap the device memory
-    memory
-        .unmap(Default::default())
-        .expect("unmap should be sucessful on host-mapped device");
-
-    // Export the memory.
-    memory
-        .export_fd(ExternalMemoryHandleType::OpaqueFd)
-        .expect("The memory should be able to be turned into a file handle if we are on UNIX")
 }
