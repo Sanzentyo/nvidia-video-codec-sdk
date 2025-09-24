@@ -2,7 +2,9 @@
 /Cargo.lock
 .vscode/
 *.bin
+*.mp4
 
 output/
 input/
 *.ps1
+*.bat

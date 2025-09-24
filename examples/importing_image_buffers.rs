@@ -11,9 +11,7 @@ use nvidia_video_codec_sdk::{
         NV_ENC_H264_PROFILE_HIGH_GUID,
         NV_ENC_PRESET_P1_GUID,
         NV_ENC_TUNING_INFO,
-    },
-    Encoder,
-    EncoderInitParams,
+    }, EncodePictureParams, Encoder, EncoderInitParams
 };
 
 /// 指定されたディレクトリ内のPNG画像ファイルを名前順に取得する
@@ -138,6 +136,15 @@ fn main() {
         .get_preset_config(encode_guid, preset_guid, tuning_info)
         .expect("Encoder should be able to create config based on presets.");
 
+    // H.264 VUIパラメータを設定してタイムスタンプ情報を有効にする
+    unsafe {
+        let h264_config = &mut preset_config.presetCfg.encodeCodecConfig.h264Config;
+        // VUIパラメータを有効にしてタイミング情報を埋め込む
+        h264_config.h264VUIParameters.timingInfoPresentFlag = 1;
+        h264_config.h264VUIParameters.numUnitInTicks = 1;
+        h264_config.h264VUIParameters.timeScale = 60; // 30fps * 2 for field rate
+    }
+
     // Write result to output file "example_output.bin".
     let mut out_file = OpenOptions::new()
         .write(true)
@@ -212,12 +219,25 @@ fn main() {
             }
         } // lock がここで落ちてアンロックされる
 
+        // PTS計算（30fpsベースで）
+        const FPS: u64 = 30u64;
+        const FRAME_DURATION_US: u64 = 1_000_000 / FPS; // マイクロ秒単位
+        let pts = i as u64 * FRAME_DURATION_US;
+        
+        // エンコードパラメータにPTSを設定（カスタムSEIは無し）
+        let codec_params = None;
+        let encode_params = EncodePictureParams {
+            input_timestamp: pts,
+            codec_params,
+            ..Default::default()
+        };
+
         // エンコード実行（複数の output_buffer をローテーションして使用）
         session
             .encode_picture(
                 &mut input_buffer,
                 output_bitstream,
-                Default::default(),
+                encode_params,
             )
             .expect("Encoder should be able to encode valid pictures");
 
@@ -227,8 +247,8 @@ fn main() {
             .lock()
             .expect("Bitstream lock should be available.");
 
-        println!("Frame {}: index={}, timestamp={}, duration={}, picture_type={:?}", 
-                 i + 1, lock.frame_index(), lock.timestamp(), lock.duration(), lock.picture_type());
+        println!("Frame {}: PTS={}, index={}, timestamp={}, duration={}, picture_type={:?}", 
+                 i + 1, pts, lock.frame_index(), lock.timestamp(), lock.duration(), lock.picture_type());
 
         let data = lock.data();
         out_file
