@@ -1,4 +1,4 @@
-use hevc_parser::HevcParser;
+use scuffle_h265::NaluArray;
 use std::fs::File;
 use std::io::Read;
 
@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     file.read_to_end(&mut buffer)?;
     let mut cursor = std::io::Cursor::new(&buffer);
 
-    let mut parser = HevcParser::from(cursor);
+    let mut parser = NaluArray::
     parser.push(&buffer);
 
     while let Ok(Some(au)) = parser.next_access_unit() {
