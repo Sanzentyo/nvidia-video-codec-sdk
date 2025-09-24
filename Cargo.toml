@@ -25,6 +25,14 @@ vulkano = "0.35.2"
 libc = "0.2.175"
 memmap2 = "0.9.8"
 
+# parse nal unit(h264)
+h264-parser = "0.2.0"
+# parse nal unit(hevc)
+hevc_parser = "0.6.9"
+
+# mp4 muxing/demuxing
+shiguredo_mp4 = "2025.2.0"
+
 [target.'cfg(windows)'.dependencies]
 ash = { version = "0.38.0", default-features = false, features = ["loaded"] }
 
