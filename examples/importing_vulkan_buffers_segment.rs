@@ -1,41 +1,23 @@
-use std::{
-    fs::File,
-    io::Write,
-    ptr::NonNull,
-    sync::Arc,
-};
+use std::{fs::File, io::Write, ptr::NonNull, sync::Arc};
 
 use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB,
-        NV_ENC_CODEC_H264_GUID,
-        NV_ENC_H264_PROFILE_HIGH_GUID,
-        NV_ENC_PRESET_P1_GUID,
-        NV_ENC_TUNING_INFO,
+        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
-    Encoder,
-    EncoderInitParams,
+    Encoder, EncoderInitParams,
 };
 use vulkano::VulkanObject;
 use vulkano::{
     device::{
-        physical::PhysicalDeviceType,
-        Device,
-        DeviceCreateInfo,
-        DeviceExtensions,
-        DeviceFeatures,
+        physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures,
         QueueCreateInfo,
     },
     instance::{Instance, InstanceCreateInfo},
     memory::{
-        DeviceMemory,
-        ExternalMemoryHandleTypes,
-        MappedMemoryRange,
-        MemoryAllocateInfo,
-        MemoryMapFlags,
-        MemoryMapInfo,
-        MemoryPropertyFlags,
+        DeviceMemory, ExternalMemoryHandleTypes, MappedMemoryRange, MemoryAllocateInfo,
+        MemoryMapFlags, MemoryMapInfo, MemoryPropertyFlags,
     },
     VulkanLibrary,
 };
@@ -126,14 +108,17 @@ fn initialize_vulkan() -> (Arc<Device>, u32) {
     // Create a Vulkan device.
     // Pick an external-memory extension based on what the physical device actually supports.
     let physical_device_name = physical_device.properties().device_name.clone();
-    
+
     let mut enabled_exts = DeviceExtensions::default();
     #[cfg(unix)]
     let (supports_fd, chosen_ext_name) = {
         let supports_fd = physical_device
             .supported_extensions()
             .khr_external_memory_fd;
-        assert!(supports_fd, "The physical device should support khr_external_memory_fd on unix");
+        assert!(
+            supports_fd,
+            "The physical device should support khr_external_memory_fd on unix"
+        );
         enabled_exts.khr_external_memory = true;
         enabled_exts.khr_external_memory_fd = true;
         let chosen_ext_name = "khr_external_memory_fd";
@@ -144,7 +129,10 @@ fn initialize_vulkan() -> (Arc<Device>, u32) {
         let supports_win32 = physical_device
             .supported_extensions()
             .khr_external_memory_win32;
-        assert!(supports_win32, "The physical device should support khr_external_memory_win32 on windows");
+        assert!(
+            supports_win32,
+            "The physical device should support khr_external_memory_win32 on windows"
+        );
         enabled_exts.khr_external_memory = true;
         enabled_exts.khr_external_memory_win32 = true;
         let chosen_ext_name = "khr_external_memory_win32";
@@ -172,14 +160,12 @@ fn initialize_vulkan() -> (Arc<Device>, u32) {
             #[cfg(unix)]
             eprintln!(
                 "Physical device '{}' supported extensions: khr_external_memory_fd={}",
-                physical_device_name,
-                supports_fd
+                physical_device_name, supports_fd
             );
             #[cfg(windows)]
             eprintln!(
                 "Physical device '{}' supported extensions: khr_external_memory_win32={}",
-                physical_device_name,
-                supports_win32
+                physical_device_name, supports_win32
             );
             eprintln!(
                 "DeviceCreateInfo requested extensions: khr_external_memory={} khr_external_memory_fd={} khr_external_memory_win32={}",
@@ -281,8 +267,7 @@ fn main() {
         })
         .collect();
 
-    std::fs::create_dir_all("./output")
-        .expect("Creating output directory should succeed.");
+    std::fs::create_dir_all("./output").expect("Creating output directory should succeed.");
 
     // Generate each of the frames with Vulkan.
     let file_descriptors = (0..FRAMES)
@@ -370,7 +355,9 @@ fn create_buffer(
     let size = (width * height * 4) as u64;
 
     // Allocate memory with Vulkan.
-    let mut memory = DeviceMemory::allocate(vulkan_device.clone(), MemoryAllocateInfo {
+    let mut memory = DeviceMemory::allocate(
+        vulkan_device.clone(),
+        MemoryAllocateInfo {
             allocation_size: size,
             memory_type_index,
             #[cfg(unix)]
@@ -378,7 +365,8 @@ fn create_buffer(
             #[cfg(windows)]
             export_handle_types: ExternalMemoryHandleTypes::OPAQUE_WIN32,
             ..Default::default()
-    })
+        },
+    )
     .expect("There should be space to allocate vulkan memory on the device");
 
     // Map and write to the memory.

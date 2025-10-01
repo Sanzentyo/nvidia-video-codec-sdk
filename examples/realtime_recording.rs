@@ -13,18 +13,10 @@ use std::{
 use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB,
-        NV_ENC_CODEC_H264_GUID,
-        NV_ENC_H264_PROFILE_HIGH_GUID,
-        NV_ENC_PRESET_P1_GUID,
-        NV_ENC_TUNING_INFO,
-        NV_ENC_PIC_TYPE,
+        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_PIC_TYPE, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
-    Encoder,
-    EncoderInitParams,
-    Session,
-    InputBuffer,
-    OutputBitstream,
+    Encoder, EncoderInitParams, InputBuffer, OutputBitstream, Session,
 };
 
 /// リアルタイム録画のための設定
@@ -68,7 +60,7 @@ impl BufferPool {
     /// バッファを初期化
     fn initialize(&mut self, session: &Session<InputBuffer>, buffer_count: usize) {
         let _lock = self.mutex.lock().unwrap();
-        
+
         for _ in 0..buffer_count {
             let input_buffer = session
                 .create_input_buffer()
@@ -76,43 +68,49 @@ impl BufferPool {
             let output_buffer = session
                 .create_output_bitstream()
                 .expect("Output buffer should be created");
-            
-            self.available_buffers.push_back((input_buffer, output_buffer));
+
+            self.available_buffers
+                .push_back((input_buffer, output_buffer));
         }
-        
+
         println!("Initialized buffer pool with {} buffers", buffer_count);
     }
 
     /// 利用可能なバッファを取得
     fn get_available_buffer(&mut self) -> Option<(InputBuffer, OutputBitstream)> {
         let mut lock = self.mutex.lock().unwrap();
-        
+
         // バッファが利用可能になるまで待機（タイムアウト付き）
         let timeout = Duration::from_millis(16); // ~60fps
         if self.available_buffers.is_empty() {
-            lock = self.available_condvar.wait_timeout(lock, timeout).unwrap().0;
+            lock = self
+                .available_condvar
+                .wait_timeout(lock, timeout)
+                .unwrap()
+                .0;
         }
-        
+
         self.available_buffers.pop_front()
     }
 
     /// エンコード完了後にバッファを使用済みキューに追加
     fn mark_as_used(&mut self, buffers: (InputBuffer, OutputBitstream), frame_index: u64) {
         let _lock = self.mutex.lock().unwrap();
-        self.used_buffers.push_back((buffers.0, buffers.1, frame_index));
+        self.used_buffers
+            .push_back((buffers.0, buffers.1, frame_index));
         self.used_condvar.notify_one();
     }
 
     /// 使用済みバッファを取得（出力処理用）
     fn get_used_buffer(&mut self) -> Option<(InputBuffer, OutputBitstream, u64)> {
         let mut lock = self.mutex.lock().unwrap();
-        
+
         if self.used_buffers.is_empty() {
             // 少し待機
             let timeout = Duration::from_millis(5);
             lock = self.used_condvar.wait_timeout(lock, timeout).unwrap().0;
         }
-        
+
         self.used_buffers.pop_front()
     }
 
@@ -158,10 +156,12 @@ impl RecordingStats {
         let encoded = self.frames_encoded.load(Ordering::Relaxed);
         let dropped = self.frames_dropped.load(Ordering::Relaxed);
         let elapsed = self.start_time.elapsed().as_secs_f64();
-        
+
         println!(
             "Stats: Captured={}, Encoded={}, Dropped={}, FPS={:.1}, Encode Rate={:.1}",
-            captured, encoded, dropped,
+            captured,
+            encoded,
+            dropped,
             captured as f64 / elapsed,
             encoded as f64 / elapsed
         );
@@ -184,7 +184,8 @@ impl RealtimeRecorder {
         let mut preset_config = encoder.get_preset_config(encode_guid, preset_guid, tuning_info)?;
 
         // セッション初期化
-        let mut initialize_params = EncoderInitParams::new(encode_guid, config.width, config.height);
+        let mut initialize_params =
+            EncoderInitParams::new(encode_guid, config.width, config.height);
         initialize_params
             .preset_guid(preset_guid)
             .tuning_info(tuning_info)
@@ -213,36 +214,36 @@ impl RealtimeRecorder {
     /// 録画開始
     fn start_recording(&mut self) -> Result<(), Box<dyn std::error::Error>> {
         self.running.store(true, Ordering::Relaxed);
-        
+
         // フレーム生成スレッド（実際のアプリケーションではスクリーンキャプチャなど）
         let frame_generator_handle = self.start_frame_generator();
-        
+
         // エンコードスレッド
         let encoder_handle = self.start_encoder_thread();
-        
+
         // 出力処理スレッド
         let output_handle = self.start_output_thread()?;
-        
+
         // 統計表示スレッド
         let stats_handle = self.start_stats_thread();
 
         println!("Recording started. Press Ctrl+C to stop...");
-        
+
         // 10秒間録画（実際のアプリケーションではユーザー入力待ち）
         thread::sleep(Duration::from_secs(10));
-        
+
         // 録画停止
         self.running.store(false, Ordering::Relaxed);
-        
+
         // スレッド終了待ち
         frame_generator_handle.join().unwrap();
         encoder_handle.join().unwrap();
         output_handle.join().unwrap();
         stats_handle.join().unwrap();
-        
+
         self.stats.print_stats();
         println!("Recording stopped.");
-        
+
         Ok(())
     }
 
@@ -264,12 +265,12 @@ impl RealtimeRecorder {
                 if now >= next_frame_time {
                     // テスト用のフレームデータ生成
                     let frame_data = generate_test_frame(
-                        config.width, 
-                        config.height, 
-                        frame_index, 
-                        now.elapsed().as_millis() as f32 / 1000.0
+                        config.width,
+                        config.height,
+                        frame_index,
+                        now.elapsed().as_millis() as f32 / 1000.0,
                     );
-                    
+
                     let frame = FrameData {
                         data: frame_data,
                         timestamp: now.elapsed().as_micros() as u64,
@@ -279,7 +280,8 @@ impl RealtimeRecorder {
                     // フレームキューに追加
                     {
                         let mut queue = frame_queue.lock().unwrap();
-                        if queue.len() < 5 { // キューサイズ制限
+                        if queue.len() < 5 {
+                            // キューサイズ制限
                             queue.push_back(frame);
                             frame_condvar.notify_one();
                             stats.frames_captured.fetch_add(1, Ordering::Relaxed);
@@ -315,7 +317,8 @@ impl RealtimeRecorder {
                     let mut queue = frame_queue.lock().unwrap();
                     if queue.is_empty() {
                         let timeout = Duration::from_millis(5);
-                        let (_queue, _timeout) = frame_condvar.wait_timeout(queue, timeout).unwrap();
+                        let (_queue, _timeout) =
+                            frame_condvar.wait_timeout(queue, timeout).unwrap();
                         continue;
                     }
                     queue.pop_front()
@@ -332,13 +335,16 @@ impl RealtimeRecorder {
                         // エンコード処理をここに実装
                         // 注意: Session は Send + Sync ではないため、
                         // 実際の実装では別のアプローチが必要
-                        
+
                         // 一旦、使用済みキューに追加
                         {
                             let mut pool = buffer_pool.lock().unwrap();
-                            pool.mark_as_used((input_buffer, output_buffer), frame_data.frame_index);
+                            pool.mark_as_used(
+                                (input_buffer, output_buffer),
+                                frame_data.frame_index,
+                            );
                         }
-                        
+
                         stats.frames_encoded.fetch_add(1, Ordering::Relaxed);
                     }
                 }
@@ -368,14 +374,14 @@ impl RealtimeRecorder {
                 if let Some((input_buffer, output_buffer, frame_index)) = used_buffer {
                     // 出力処理（簡略化）
                     println!("Processing output for frame {}", frame_index);
-                    
+
                     // バッファを再利用キューに戻す
                     {
                         let mut pool = buffer_pool.lock().unwrap();
                         pool.return_buffer((input_buffer, output_buffer));
                     }
                 }
-                
+
                 thread::sleep(Duration::from_millis(1));
             }
         });
@@ -400,21 +406,22 @@ impl RealtimeRecorder {
 /// テスト用フレーム生成
 fn generate_test_frame(width: u32, height: u32, frame_index: u64, time: f32) -> Vec<u8> {
     let mut data = Vec::with_capacity((width * height * 4) as usize);
-    
+
     for y in 0..height {
         for x in 0..width {
             let red = ((255.0 * x as f32 / width as f32) as u8).wrapping_add((time * 50.0) as u8);
-            let green = ((255.0 * y as f32 / height as f32) as u8).wrapping_add((frame_index % 255) as u8);
+            let green =
+                ((255.0 * y as f32 / height as f32) as u8).wrapping_add((frame_index % 255) as u8);
             let blue = ((time * 255.0) as u8).wrapping_add((frame_index % 128) as u8);
-            
+
             // ARGB形式
-            data.push(blue);  // B
+            data.push(blue); // B
             data.push(green); // G
-            data.push(red);   // R
-            data.push(255);   // A
+            data.push(red); // R
+            data.push(255); // A
         }
     }
-    
+
     data
 }
 

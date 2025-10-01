@@ -1,23 +1,23 @@
 use std::{
-    fs::{self, OpenOptions}, io::Write, path::Path
+    fs::{self, OpenOptions},
+    io::Write,
+    path::Path,
 };
 
 use cudarc::driver::CudaContext;
 use image::GenericImageView;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB,
-        NV_ENC_CODEC_H264_GUID,
-        NV_ENC_H264_PROFILE_HIGH_GUID,
-        NV_ENC_PRESET_P1_GUID,
-        NV_ENC_TUNING_INFO,
-    }, EncodePictureParams, Encoder, EncoderInitParams
+        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
+    },
+    EncodePictureParams, Encoder, EncoderInitParams,
 };
 
 /// 指定されたディレクトリ内のPNG画像ファイルを名前順に取得する
 fn get_png_files(dir_path: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
-    
+
     if let Ok(entries) = fs::read_dir(dir_path) {
         for entry in entries {
             if let Ok(entry) = entry {
@@ -28,54 +28,58 @@ fn get_png_files(dir_path: &Path) -> Vec<std::path::PathBuf> {
             }
         }
     }
-    
+
     // ファイル名で並び替え
-    files.sort_by(|a, b| {
-        a.file_name().cmp(&b.file_name())
-    });
-    
+    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+
     files
 }
 
 /// PNG画像を読み込んでARGB形式のバイト配列に変換する
-fn load_png_as_argb(path: &Path, target_width: u32, target_height: u32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn load_png_as_argb(
+    path: &Path,
+    target_width: u32,
+    target_height: u32,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let img = image::open(path)?;
     let rgb_img = img.to_rgb8();
     let (width, height) = rgb_img.dimensions();
-    
+
     // リサイズが必要な場合はリサイズする
     let resized_img = if width != target_width || height != target_height {
-        image::imageops::resize(&rgb_img, target_width, target_height, image::imageops::FilterType::Lanczos3)
+        image::imageops::resize(
+            &rgb_img,
+            target_width,
+            target_height,
+            image::imageops::FilterType::Lanczos3,
+        )
     } else {
         rgb_img
     };
-    
+
     // RGBからARGBに変換
     let mut argb_data = Vec::with_capacity((target_width * target_height * 4) as usize);
-    
+
     for pixel in resized_img.pixels() {
         let [r, g, b] = pixel.0;
         // ARGB形式で格納 (Blue, Green, Red, Alpha)
-        argb_data.push(b);  // Blue
-        argb_data.push(g);  // Green
-        argb_data.push(r);  // Red
+        argb_data.push(b); // Blue
+        argb_data.push(g); // Green
+        argb_data.push(r); // Red
         argb_data.push(255); // Alpha
     }
-    
+
     Ok(argb_data)
 }
-
-
 
 /// PNG画像を読み込んでそれぞれを個別の.binファイルとしてエンコード
 fn main() {
     // 入力フォルダと出力フォルダのパス
     let input_dir = Path::new("input/save_frames/20250924_180745");
     let output_dir = Path::new("output/image_buffers");
-    
+
     // 出力ディレクトリを作成
-    std::fs::create_dir_all(output_dir)
-        .expect("Creating output directory should succeed.");
+    std::fs::create_dir_all(output_dir).expect("Creating output directory should succeed.");
 
     // PNG画像ファイルを取得
     let png_files = get_png_files(input_dir);
@@ -88,10 +92,10 @@ fn main() {
 
     // 最初の画像を読み込んでサイズを取得
     let first_img_path = &png_files[0];
-    let first_img = image::open(first_img_path)
-        .expect("Failed to open first image to determine dimensions");
+    let first_img =
+        image::open(first_img_path).expect("Failed to open first image to determine dimensions");
     let (width, height) = first_img.dimensions();
-    
+
     println!("Image dimensions: {}x{}", width, height);
 
     // Create a new CudaContext to interact with cuda.
@@ -205,8 +209,13 @@ fn main() {
 
     // 各フレームを順次エンコードしてファイルに追記
     for (i, (path, argb_data)) in loaded_frames.iter().enumerate() {
-        println!("Processing frame {} / {}: {}", i + 1, loaded_frames.len(), path.display());
-        
+        println!(
+            "Processing frame {} / {}: {}",
+            i + 1,
+            loaded_frames.len(),
+            path.display()
+        );
+
         let output_bitstream = &mut output_buffers[i % num_bufs];
 
         // バッファをロックしてデータを書き込み
@@ -223,7 +232,7 @@ fn main() {
         const FPS: u64 = 30u64;
         const FRAME_DURATION_US: u64 = 1_000_000 / FPS; // マイクロ秒単位
         let pts = i as u64 * FRAME_DURATION_US;
-        
+
         // エンコードパラメータにPTSを設定（カスタムSEIは無し）
         let codec_params = None;
         let encode_params = EncodePictureParams {
@@ -234,11 +243,7 @@ fn main() {
 
         // エンコード実行（複数の output_buffer をローテーションして使用）
         session
-            .encode_picture(
-                &mut input_buffer,
-                output_bitstream,
-                encode_params,
-            )
+            .encode_picture(&mut input_buffer, output_bitstream, encode_params)
             .expect("Encoder should be able to encode valid pictures");
 
         // 出力をロックしてデータを取得し、ファイルに書き込む
@@ -247,8 +252,15 @@ fn main() {
             .lock()
             .expect("Bitstream lock should be available.");
 
-        println!("Frame {}: PTS={}, index={}, timestamp={}, duration={}, picture_type={:?}", 
-                 i + 1, pts, lock.frame_index(), lock.timestamp(), lock.duration(), lock.picture_type());
+        println!(
+            "Frame {}: PTS={}, index={}, timestamp={}, duration={}, picture_type={:?}",
+            i + 1,
+            pts,
+            lock.frame_index(),
+            lock.timestamp(),
+            lock.duration(),
+            lock.picture_type()
+        );
 
         let data = lock.data();
         out_file
@@ -259,5 +271,3 @@ fn main() {
     println!("Encoding completed! {} files processed.", png_files.len());
     println!("Total encoding time: {:.2?}", encode_start.elapsed());
 }
-
-

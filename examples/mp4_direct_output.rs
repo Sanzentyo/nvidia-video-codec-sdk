@@ -1,29 +1,24 @@
 use std::{
-    fs::{self, File, OpenOptions}, 
-    io::{BufWriter, Write}, 
+    fs::{self, File, OpenOptions},
+    io::{BufWriter, Write},
     path::Path,
-    time::{SystemTime, UNIX_EPOCH}
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cudarc::driver::CudaContext;
 use image::GenericImageView;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB,
-        NV_ENC_CODEC_H264_GUID,
-        NV_ENC_H264_PROFILE_HIGH_GUID,
-        NV_ENC_PRESET_P1_GUID,
-        NV_ENC_TUNING_INFO,
+        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
-    Encoder,
-    EncoderInitParams,
-    EncodePictureParams,
+    EncodePictureParams, Encoder, EncoderInitParams,
 };
 
 /// PNG画像ファイルを名前順に取得
 fn get_png_files(dir_path: &Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
-    
+
     if let Ok(entries) = fs::read_dir(dir_path) {
         for entry in entries {
             if let Ok(entry) = entry {
@@ -34,33 +29,42 @@ fn get_png_files(dir_path: &Path) -> Vec<std::path::PathBuf> {
             }
         }
     }
-    
+
     files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     files
 }
 
 /// PNG画像をARGB形式に変換
-fn load_png_as_argb(path: &Path, target_width: u32, target_height: u32) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
+fn load_png_as_argb(
+    path: &Path,
+    target_width: u32,
+    target_height: u32,
+) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let img = image::open(path)?;
     let rgb_img = img.to_rgb8();
     let (width, height) = rgb_img.dimensions();
-    
+
     let resized_img = if width != target_width || height != target_height {
-        image::imageops::resize(&rgb_img, target_width, target_height, image::imageops::FilterType::Lanczos3)
+        image::imageops::resize(
+            &rgb_img,
+            target_width,
+            target_height,
+            image::imageops::FilterType::Lanczos3,
+        )
     } else {
         rgb_img
     };
-    
+
     let mut argb_data = Vec::with_capacity((target_width * target_height * 4) as usize);
-    
+
     for pixel in resized_img.pixels() {
         let [r, g, b] = pixel.0;
-        argb_data.push(b);   // Blue
-        argb_data.push(g);   // Green
-        argb_data.push(r);   // Red
+        argb_data.push(b); // Blue
+        argb_data.push(g); // Green
+        argb_data.push(r); // Red
         argb_data.push(255); // Alpha
     }
-    
+
     Ok(argb_data)
 }
 
@@ -89,7 +93,7 @@ fn encode_frames_with_metadata(
     // 最初の画像でサイズを取得
     let first_img = image::open(&png_files[0])?;
     let (width, height) = first_img.dimensions();
-    
+
     println!("Image dimensions: {}x{}", width, height);
 
     // CUDA & エンコーダー初期化
@@ -115,10 +119,8 @@ fn encode_frames_with_metadata(
     let session = encoder.start_session(buffer_format, initialize_params)?;
 
     // バッファ作成
-    let num_bufs = usize::try_from(preset_config.presetCfg.frameIntervalP)
-        .unwrap_or(1)
-        + usize::try_from(preset_config.presetCfg.rcParams.lookaheadDepth)
-            .unwrap_or(0);
+    let num_bufs = usize::try_from(preset_config.presetCfg.frameIntervalP).unwrap_or(1)
+        + usize::try_from(preset_config.presetCfg.rcParams.lookaheadDepth).unwrap_or(0);
 
     let mut output_buffers: Vec<_> = (0..num_bufs)
         .map(|_| session.create_output_bitstream())
@@ -151,7 +153,7 @@ fn encode_frames_with_metadata(
     // エンコードループ
     for (i, (_path, argb_data)) in loaded_frames.iter().enumerate() {
         println!("Processing frame {} / {}", i + 1, loaded_frames.len());
-        
+
         let output_bitstream = &mut output_buffers[i % num_bufs];
 
         // フレームデータをバッファに書き込み
@@ -178,14 +180,19 @@ fn encode_frames_with_metadata(
         // 結果取得
         let lock = output_bitstream.lock()?;
         let data = lock.data().to_vec();
-        let is_keyframe = matches!(lock.picture_type(), 
-            nvidia_video_codec_sdk::sys::nvEncodeAPI::NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR |
-            nvidia_video_codec_sdk::sys::nvEncodeAPI::NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_I
+        let is_keyframe = matches!(
+            lock.picture_type(),
+            nvidia_video_codec_sdk::sys::nvEncodeAPI::NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_IDR
+                | nvidia_video_codec_sdk::sys::nvEncodeAPI::NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_I
         );
 
         println!(
-            "Frame {}: PTS={}, Size={}B, Keyframe={}, Type={:?}", 
-            i + 1, pts, data.len(), is_keyframe, lock.picture_type()
+            "Frame {}: PTS={}, Size={}B, Keyframe={}, Type={:?}",
+            i + 1,
+            pts,
+            data.len(),
+            is_keyframe,
+            lock.picture_type()
         );
 
         encoded_frames.push(EncodedFrame {
@@ -210,28 +217,31 @@ fn create_mp4_with_timestamps(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // シンプルなアプローチ: AnnexB形式のH.264ストリームとして出力し、
     // 別途メタデータファイルを作成
-    
+
     let h264_path = output_path.with_extension("h264");
     let mut h264_file = BufWriter::new(File::create(&h264_path)?);
-    
+
     // H.264ストリーム書き込み
     for frame in encoded_frames {
         h264_file.write_all(&frame.data)?;
     }
     h264_file.flush()?;
-    
+
     // メタデータファイル作成
     let metadata_path = output_path.with_extension("metadata.txt");
     let mut metadata_file = File::create(&metadata_path)?;
-    
+
     writeln!(metadata_file, "# H.264 Stream Metadata")?;
     writeln!(metadata_file, "fps={}", fps)?;
     writeln!(metadata_file, "width={}", width)?;
     writeln!(metadata_file, "height={}", height)?;
     writeln!(metadata_file, "total_frames={}", encoded_frames.len())?;
     writeln!(metadata_file, "")?;
-    writeln!(metadata_file, "# Frame Information (frame_index, pts, dts, size, keyframe)")?;
-    
+    writeln!(
+        metadata_file,
+        "# Frame Information (frame_index, pts, dts, size, keyframe)"
+    )?;
+
     for frame in encoded_frames {
         writeln!(
             metadata_file,
@@ -243,16 +253,19 @@ fn create_mp4_with_timestamps(
             frame.is_keyframe
         )?;
     }
-    
+
     println!("H.264 stream saved to: {}", h264_path.display());
     println!("Metadata saved to: {}", metadata_path.display());
-    
+
     // ffmpegを使用してタイムスタンプ付きMP4を作成するためのスクリプトを生成
     let script_path = output_path.with_extension("convert.bat");
     let mut script_file = File::create(&script_path)?;
-    
+
     writeln!(script_file, "@echo off")?;
-    writeln!(script_file, "echo Converting H.264 stream to MP4 with proper timestamps...")?;
+    writeln!(
+        script_file,
+        "echo Converting H.264 stream to MP4 with proper timestamps..."
+    )?;
     writeln!(
         script_file,
         "ffmpeg -f h264 -framerate {} -i \"{}\" -c copy -movflags +faststart \"{}\"",
@@ -262,10 +275,10 @@ fn create_mp4_with_timestamps(
     )?;
     writeln!(script_file, "echo Conversion completed!")?;
     writeln!(script_file, "pause")?;
-    
+
     println!("Conversion script saved to: {}", script_path.display());
     println!("Run the script to create MP4 with proper timestamps.");
-    
+
     Ok(())
 }
 
@@ -273,7 +286,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let input_dir = Path::new("input/save_frames/20250924_180745");
     let output_dir = Path::new("output/mp4_direct");
     let fps = 30;
-    
+
     std::fs::create_dir_all(output_dir)?;
 
     // フレームをエンコードしてメタデータ収集
@@ -287,9 +300,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output_path = output_dir.join("timestamped_output.mp4");
     create_mp4_with_timestamps(&encoded_frames, &output_path, fps, width, height)?;
 
-    println!("Encoding completed! {} frames processed.", encoded_frames.len());
-    println!("Total encoded size: {} bytes", 
-             encoded_frames.iter().map(|f| f.data.len()).sum::<usize>());
+    println!(
+        "Encoding completed! {} frames processed.",
+        encoded_frames.len()
+    );
+    println!(
+        "Total encoded size: {} bytes",
+        encoded_frames.iter().map(|f| f.data.len()).sum::<usize>()
+    );
 
     Ok(())
 }

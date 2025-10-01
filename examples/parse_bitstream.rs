@@ -12,11 +12,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     while let Ok(Some(au)) = parser.next_access_unit() {
         println!("Frame: keyframe={}", au.is_keyframe());
-        
+
         if let Some(ref sps) = au.sps {
             println!("  Resolution: {}x{}", sps.width, sps.height);
         }
-        
+
         for nal in au.nals() {
             println!("  NAL: {:?}", nal.nal_type);
         }

@@ -3,8 +3,7 @@ use std::{
     io::Write,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        mpsc,
-        Arc,
+        mpsc, Arc,
     },
     thread,
     time::{Duration, Instant},
@@ -13,20 +12,17 @@ use std::{
 use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB,
-        NV_ENC_CODEC_H264_GUID,
-        NV_ENC_PRESET_P1_GUID,
-        NV_ENC_TUNING_INFO,
+        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
-    Encoder,
-    EncoderInitParams,
+    Encoder, EncoderInitParams,
 };
 
 /// フレームデータ
 #[derive(Clone)]
 struct FrameData {
     data: Vec<u8>,
-    timestamp: u64,
+    captured_at: Instant,
     frame_index: u64,
 }
 
@@ -35,6 +31,8 @@ struct RecordingStats {
     frames_generated: AtomicU64,
     frames_encoded: AtomicU64,
     frames_dropped: AtomicU64,
+    total_latency_ns: AtomicU64,
+    max_latency_ns: AtomicU64,
     start_time: Instant,
 }
 
@@ -44,22 +42,46 @@ impl RecordingStats {
             frames_generated: AtomicU64::new(0),
             frames_encoded: AtomicU64::new(0),
             frames_dropped: AtomicU64::new(0),
+            total_latency_ns: AtomicU64::new(0),
+            max_latency_ns: AtomicU64::new(0),
             start_time: Instant::now(),
         }
+    }
+
+    fn elapsed(&self) -> Duration {
+        self.start_time.elapsed()
+    }
+
+    fn record_latency(&self, latency: Duration) {
+        let ns = latency.as_nanos().min(u64::MAX as u128) as u64;
+        self.total_latency_ns.fetch_add(ns, Ordering::Relaxed);
+        self.max_latency_ns.fetch_max(ns, Ordering::Relaxed);
     }
 
     fn print_stats(&self) {
         let generated = self.frames_generated.load(Ordering::Relaxed);
         let encoded = self.frames_encoded.load(Ordering::Relaxed);
         let dropped = self.frames_dropped.load(Ordering::Relaxed);
-        let elapsed = self.start_time.elapsed().as_secs_f64();
-        
+        let elapsed = self.elapsed().as_secs_f64();
+        let total_latency_ns = self.total_latency_ns.load(Ordering::Relaxed);
+        let max_latency_ns = self.max_latency_ns.load(Ordering::Relaxed);
+        let avg_latency_ms = if encoded > 0 {
+            (total_latency_ns as f64) / (encoded as f64 * 1_000_000.0)
+        } else {
+            0.0
+        };
+        let max_latency_ms = max_latency_ns as f64 / 1_000_000.0;
+
         if elapsed > 0.0 {
             println!(
-                "Stats: Generated={}, Encoded={}, Dropped={}, Gen FPS={:.1}, Enc FPS={:.1}",
-                generated, encoded, dropped,
+                "Stats: Generated={}, Encoded={}, Dropped={}, Gen FPS={:.1}, Enc FPS={:.1}, Avg Latency={:.2}ms, Max Latency={:.2}ms",
+                generated,
+                encoded,
+                dropped,
                 generated as f64 / elapsed,
-                encoded as f64 / elapsed
+                encoded as f64 / elapsed,
+                avg_latency_ms,
+                max_latency_ms
             );
         }
     }
@@ -135,8 +157,10 @@ impl SimpleRealtimeRecorder {
             .truncate(true)
             .open(&self.output_file)?;
 
-        println!("Recording started ({}x{} @ {}fps, {} buffers)", 
-                 self.width, self.height, self.fps, num_bufs);
+        println!(
+            "Recording started ({}x{} @ {}fps, {} buffers)",
+            self.width, self.height, self.fps, num_bufs
+        );
 
         // メインレコーディングループ
         let frame_duration = Duration::from_nanos(1_000_000_000 / self.fps as u64);
@@ -148,7 +172,7 @@ impl SimpleRealtimeRecorder {
 
         while recording_start.elapsed() < recording_duration {
             let now = Instant::now();
-            
+
             // フレーム生成タイミングチェック
             if now >= next_frame_time {
                 // フレーム生成
@@ -173,10 +197,11 @@ impl SimpleRealtimeRecorder {
                     Ok(_) => {
                         let lock = output_buffer.lock()?;
                         let data = lock.data();
-                        
+
                         // ファイルに書き込み
                         out_file.write_all(data)?;
                         stats.frames_encoded.fetch_add(1, Ordering::Relaxed);
+                        stats.record_latency(now.elapsed());
 
                         if frame_index % 30 == 0 {
                             println!("Encoded frame {} ({:?})", frame_index, lock.picture_type());
@@ -252,17 +277,16 @@ impl ProducerConsumerRecorder {
         let (frame_tx, frame_rx) = mpsc::sync_channel::<FrameData>(10);
 
         // フレーム生成スレッド
-        let generator_handle = self.start_frame_generator(
-            Arc::clone(&stats),
-            Arc::clone(&running),
-            frame_tx,
-        );
+        let generator_handle =
+            self.start_frame_generator(Arc::clone(&stats), Arc::clone(&running), frame_tx);
 
         // 統計表示スレッド
         let stats_handle = self.start_stats_thread(Arc::clone(&stats), Arc::clone(&running));
 
-        println!("Recording started with Producer-Consumer pattern ({}x{} @ {}fps)", 
-                 self.width, self.height, self.fps);
+        println!(
+            "Recording started with Producer-Consumer pattern ({}x{} @ {}fps)",
+            self.width, self.height, self.fps
+        );
 
         // エンコード処理（メインスレッド）
         self.run_encoder(Arc::clone(&stats), Arc::clone(&running), frame_rx)?;
@@ -271,7 +295,9 @@ impl ProducerConsumerRecorder {
         running.store(false, Ordering::Relaxed);
 
         // スレッド終了待ち
-        generator_handle.join().map_err(|_| "Frame generator thread panicked")?;
+        generator_handle
+            .join()
+            .map_err(|_| "Frame generator thread panicked")?;
         stats_handle.join().map_err(|_| "Stats thread panicked")?;
 
         stats.print_stats();
@@ -298,13 +324,13 @@ impl ProducerConsumerRecorder {
 
             while running.load(Ordering::Relaxed) {
                 let now = Instant::now();
-                
+
                 if now >= next_frame_time {
                     let frame_data = generate_test_frame(width, height, frame_index, now);
-                    
+
                     let frame = FrameData {
                         data: frame_data,
-                        timestamp: now.duration_since(stats.start_time).as_micros() as u64,
+                        captured_at: now,
                         frame_index,
                     };
 
@@ -327,7 +353,7 @@ impl ProducerConsumerRecorder {
                     thread::sleep(Duration::from_millis(1));
                 }
             }
-            
+
             println!("Frame generator stopped");
         })
     }
@@ -381,7 +407,7 @@ impl ProducerConsumerRecorder {
         let recording_duration = Duration::from_secs(10);
 
         // エンコードループ
-        while stats.start_time.elapsed() < recording_duration {
+        while running.load(Ordering::Relaxed) && stats.elapsed() < recording_duration {
             match frame_rx.recv_timeout(Duration::from_millis(100)) {
                 Ok(frame) => {
                     let input_buffer = &mut input_buffers[buffer_index];
@@ -402,9 +428,14 @@ impl ProducerConsumerRecorder {
                             let data = lock.data();
                             out_file.write_all(data)?;
                             stats.frames_encoded.fetch_add(1, Ordering::Relaxed);
+                            stats.record_latency(frame.captured_at.elapsed());
 
                             if frame.frame_index % 30 == 0 {
-                                println!("Encoded frame {} ({:?})", frame.frame_index, lock.picture_type());
+                                println!(
+                                    "Encoded frame {} ({:?})",
+                                    frame.frame_index,
+                                    lock.picture_type()
+                                );
                             }
                         }
                         Err(e) => {
@@ -417,6 +448,7 @@ impl ProducerConsumerRecorder {
             }
         }
 
+        running.store(false, Ordering::Relaxed);
         Ok(())
     }
 
@@ -439,20 +471,21 @@ impl ProducerConsumerRecorder {
 fn generate_test_frame(width: u32, height: u32, frame_index: u64, now: Instant) -> Vec<u8> {
     let mut data = Vec::with_capacity((width * height * 4) as usize);
     let time = now.elapsed().as_secs_f32();
-    
+
     for y in 0..height {
         for x in 0..width {
             let red = (255.0 * (x as f32 / width as f32) * (0.5 + 0.5 * (time * 0.5).sin())) as u8;
-            let green = (255.0 * (y as f32 / height as f32) * (0.5 + 0.5 * (time * 0.3).cos())) as u8;
+            let green =
+                (255.0 * (y as f32 / height as f32) * (0.5 + 0.5 * (time * 0.3).cos())) as u8;
             let blue = (255.0 * (0.5 + 0.5 * (time + frame_index as f32 * 0.1).sin())) as u8;
-            
-            data.push(blue);  // B
+
+            data.push(blue); // B
             data.push(green); // G
-            data.push(red);   // R
-            data.push(255);   // A
+            data.push(red); // R
+            data.push(255); // A
         }
     }
-    
+
     data
 }
 
@@ -460,33 +493,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Realtime recording examples");
     println!("1. Simple single-threaded approach");
     println!("2. Producer-Consumer pattern");
-    
+
     // シンプルなシングルスレッドアプローチ
     println!("\n=== Simple Single-threaded Recording ===");
-    let mut simple_recorder = SimpleRealtimeRecorder::new(
-        1920, 
-        1080, 
-        30, 
-        "simple_realtime.bin".to_string()
-    );
+    let mut simple_recorder =
+        SimpleRealtimeRecorder::new(1920, 1080, 30, "simple_realtime.bin".to_string());
     simple_recorder.start_recording()?;
 
     thread::sleep(Duration::from_secs(2));
 
     // Producer-Consumer パターン
     println!("\n=== Producer-Consumer Recording ===");
-    let mut pc_recorder = ProducerConsumerRecorder::new(
-        1920, 
-        1080, 
-        30, 
-        "producer_consumer_realtime.bin".to_string()
-    );
+    let mut pc_recorder =
+        ProducerConsumerRecorder::new(1920, 1080, 30, "producer_consumer_realtime.bin".to_string());
     pc_recorder.start_recording()?;
 
     println!("\nBoth recordings completed!");
     println!("Convert to video:");
     println!("ffmpeg -i simple_realtime.bin -vcodec copy simple_realtime.mp4");
-    println!("ffmpeg -i producer_consumer_realtime.bin -vcodec copy producer_consumer_realtime.mp4");
-    
+    println!(
+        "ffmpeg -i producer_consumer_realtime.bin -vcodec copy producer_consumer_realtime.mp4"
+    );
+
     Ok(())
 }
