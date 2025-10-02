@@ -146,7 +146,8 @@ fn main() {
         // VUIパラメータを有効にしてタイミング情報を埋め込む
         h264_config.h264VUIParameters.timingInfoPresentFlag = 1;
         h264_config.h264VUIParameters.numUnitInTicks = 1;
-        h264_config.h264VUIParameters.timeScale = 60; // 30fps * 2 for field rate
+        h264_config.h264VUIParameters.timeScale = 60; // 30fps * 2 for field
+                                                      // rate
     }
 
     // Write result to output file "example_output.bin".

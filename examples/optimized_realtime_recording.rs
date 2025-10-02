@@ -74,7 +74,8 @@ impl RecordingStats {
 
         if elapsed > 0.0 {
             println!(
-                "Stats: Generated={}, Encoded={}, Dropped={}, Gen FPS={:.1}, Enc FPS={:.1}, Avg Latency={:.2}ms, Max Latency={:.2}ms",
+                "Stats: Generated={}, Encoded={}, Dropped={}, Gen FPS={:.1}, Enc FPS={:.1}, Avg \
+                 Latency={:.2}ms, Max Latency={:.2}ms",
                 generated,
                 encoded,
                 dropped,
@@ -88,7 +89,8 @@ impl RecordingStats {
 }
 
 /// シングルスレッドベースのリアルタイム録画
-/// （実際のアプリケーションでは、フレーム取得とエンコードを同じスレッドで処理することが多い）
+/// （実際のアプリケーションでは、
+/// フレーム取得とエンコードを同じスレッドで処理することが多い）
 struct SimpleRealtimeRecorder {
     width: u32,
     height: u32,

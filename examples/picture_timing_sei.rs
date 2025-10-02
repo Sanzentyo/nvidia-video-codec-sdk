@@ -1,3 +1,5 @@
+use std::{fs::File, io::Write};
+
 use cudarc::driver::CudaContext;
 use image::{ImageBuffer, Rgba};
 /// Picture Timing SEIを使用したタイムスタンプ埋め込み例
@@ -9,7 +11,6 @@ use nvidia_video_codec_sdk::{
     },
     EncodePictureParams, Encoder, EncoderInitParams,
 };
-use std::{fs::File, io::Write};
 
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;

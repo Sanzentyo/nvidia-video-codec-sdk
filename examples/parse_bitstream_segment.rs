@@ -1,6 +1,9 @@
+use std::{
+    fs::{DirEntry, File},
+    io::Read,
+};
+
 use h264_parser::AnnexBParser;
-use std::fs::{DirEntry, File};
-use std::io::Read;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file = std::fs::read_dir("./output")?

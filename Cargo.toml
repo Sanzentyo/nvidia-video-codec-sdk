@@ -20,6 +20,8 @@ features = ["ci-check"]
 [dependencies]
 cudarc = { version = "0.17.3", features = ["cuda-version-from-build-system"] }
 image = "0.25.6"
+anyhow = "1.0.95"
+serde_json = "1.0.116"
 
 [dev-dependencies]
 vulkano = "0.35.2"
@@ -33,10 +35,8 @@ scuffle-h265 = "0.2.2"
 shiguredo_mp4 = "2025.2.0"
 
 tracing = "0.1.41"
-tracing-subscriber = "0.3.20"
+tracing-subscriber = { version = "0.3.20", features = ["fmt", "env-filter"] }
 serde = { version = "1.0.228", features = ["derive"] }
-anyhow = "1.0.100"
-serde_json = "1.0.145"
 
 [target.'cfg(windows)'.dependencies]
 ash = { version = "0.38.0", default-features = false, features = ["loaded"] }

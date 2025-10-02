@@ -1,6 +1,7 @@
 //! Defines `ENCODE_API`, which is a lazy static of [`EncodeAPI`].
 
 use core::ffi::{c_int, c_void};
+use std::sync::LazyLock;
 
 use crate::sys::nvEncodeAPI::{
     NvEncodeAPICreateInstance, NvEncodeAPIGetMaxSupportedVersion, GUID, NVENCAPI_MAJOR_VERSION,
@@ -14,12 +15,11 @@ use crate::sys::nvEncodeAPI::{
     NV_ENC_REGISTERED_PTR, NV_ENC_REGISTER_RESOURCE, NV_ENC_RESTORE_ENCODER_STATE_PARAMS,
     NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_STAT, NV_ENC_TUNING_INFO,
 };
-
-use std::sync::LazyLock;
 /// A lazy static for the Encoder API.
 ///
 /// You should not interact with this directly.
-/// [`Encoder`](crate::Encoder) exposes much of the functionality and provides a nicer API.
+/// [`Encoder`](crate::Encoder) exposes much of the functionality and provides a
+/// nicer API.
 pub static ENCODE_API: LazyLock<EncodeAPI> = LazyLock::new(|| EncodeAPI::new());
 
 // Function type aliases to shorten later definitions.

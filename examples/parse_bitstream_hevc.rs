@@ -1,6 +1,6 @@
+use std::{fs::File, io::Read};
+
 use scuffle_h265::NaluArray;
-use std::fs::File;
-use std::io::Read;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut file = File::open("example_output_hevc.bin")?;

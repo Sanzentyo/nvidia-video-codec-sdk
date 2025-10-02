@@ -1,7 +1,7 @@
+use std::{fs::File, io::Read};
+
 use h264_parser::AnnexBParser;
 use shiguredo_mp4::BoxHeader;
-use std::fs::File;
-use std::io::Read;
 
 const MAX_FRAG_COUNT: usize = 16;
 

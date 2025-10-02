@@ -1,3 +1,5 @@
+#[cfg(windows)]
+use std::os::windows::io::FromRawHandle;
 use std::{
     fs::{File, OpenOptions},
     io::Write,
@@ -5,6 +7,8 @@ use std::{
     sync::Arc,
 };
 
+#[cfg(windows)]
+use ash::vk;
 use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
@@ -13,7 +17,6 @@ use nvidia_video_codec_sdk::{
     },
     Encoder, EncoderInitParams,
 };
-use vulkano::VulkanObject;
 use vulkano::{
     device::{
         physical::PhysicalDeviceType, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures,
@@ -24,13 +27,8 @@ use vulkano::{
         DeviceMemory, ExternalMemoryHandleTypes, MappedMemoryRange, MemoryAllocateInfo,
         MemoryMapFlags, MemoryMapInfo, MemoryPropertyFlags,
     },
-    VulkanLibrary,
+    VulkanLibrary, VulkanObject,
 };
-
-#[cfg(windows)]
-use ash::vk;
-#[cfg(windows)]
-use std::os::windows::io::FromRawHandle;
 
 /// Returns the color `(r, g, b, alpha)` of a pixel on the screen relative to
 /// its position on a screen:
@@ -111,7 +109,8 @@ fn initialize_vulkan() -> (Arc<Device>, u32) {
         );
 
     // Create a Vulkan device.
-    // Pick an external-memory extension based on what the physical device actually supports.
+    // Pick an external-memory extension based on what the physical device actually
+    // supports.
     let physical_device_name = physical_device.properties().device_name.clone();
 
     let mut enabled_exts = DeviceExtensions::default();
@@ -173,13 +172,15 @@ fn initialize_vulkan() -> (Arc<Device>, u32) {
                 physical_device_name, supports_win32
             );
             eprintln!(
-                "DeviceCreateInfo requested extensions: khr_external_memory={} khr_external_memory_fd={} khr_external_memory_win32={}",
+                "DeviceCreateInfo requested extensions: khr_external_memory={} \
+                 khr_external_memory_fd={} khr_external_memory_win32={}",
                 enabled_exts.khr_external_memory,
                 enabled_exts.khr_external_memory_fd,
                 enabled_exts.khr_external_memory_win32
             );
             panic!(
-                "Vulkan should be installed correctly and device should support selected extension: {}",
+                "Vulkan should be installed correctly and device should support selected \
+                 extension: {}",
                 chosen_ext_name
             )
         }
@@ -405,7 +406,8 @@ fn create_buffer(
         .unwrap();
 
         // Write using the placed address
-        // Note: `mmap_mut` must live until after unmap; ensure scope encloses writes and unmap.
+        // Note: `mmap_mut` must live until after unmap; ensure scope encloses writes
+        // and unmap.
         let content = unsafe {
             std::slice::from_raw_parts_mut(address as *mut u8, memory.allocation_size() as usize)
         };
@@ -469,7 +471,8 @@ fn create_buffer(
 
     let _ = write_ptr; // silence unused in placed branch
 
-    // Export the memory. On Windows export a Win32 HANDLE and wrap into File; on Unix export an FD.
+    // Export the memory. On Windows export a Win32 HANDLE and wrap into File; on
+    // Unix export an FD.
     #[cfg(unix)]
     {
         memory
@@ -500,8 +503,8 @@ fn create_buffer(
             );
         }
         let raw_handle = unsafe { output.assume_init() };
-        // SAFETY: OPAQUE_WIN32 requires the caller to close the handle. Wrapping in File transfers
-        // ownership and ensures CloseHandle is called on drop.
+        // SAFETY: OPAQUE_WIN32 requires the caller to close the handle. Wrapping in
+        // File transfers ownership and ensures CloseHandle is called on drop.
         unsafe { File::from_raw_handle(raw_handle as _) }
     }
 }
