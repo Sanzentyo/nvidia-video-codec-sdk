@@ -10,22 +10,12 @@ use std::fmt::Debug;
 use super::{api::ENCODE_API, encoder::Encoder, result::EncodeError};
 use crate::{
     sys::nvEncodeAPI::{
-        GUID,
-        NV_ENC_BUFFER_FORMAT,
-        NV_ENC_CODEC_AV1_GUID,
-        NV_ENC_CODEC_H264_GUID,
-        NV_ENC_CODEC_HEVC_GUID,
-        NV_ENC_CODEC_PIC_PARAMS,
-        NV_ENC_PIC_PARAMS,
-        NV_ENC_PIC_PARAMS_AV1,
-        NV_ENC_PIC_PARAMS_H264,
-        NV_ENC_PIC_PARAMS_HEVC,
-        NV_ENC_PIC_PARAMS_VER,
-        NV_ENC_PIC_STRUCT,
+        GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_CODEC_HEVC_GUID, NV_ENC_CODEC_PIC_PARAMS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_AV1,
+        NV_ENC_PIC_PARAMS_H264, NV_ENC_PIC_PARAMS_HEVC, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT,
         NV_ENC_PIC_TYPE,
     },
-    EncoderInput,
-    EncoderOutput,
+    EncoderInput, EncoderOutput,
 };
 
 /// An encoding session to create input/output buffers and encode frames.
@@ -194,6 +184,7 @@ impl Session {
             inputTimeStamp: params.input_timestamp,
             codecPicParams: params.codec_params.map(Into::into).unwrap_or_default(),
             pictureType: params.picture_type,
+
             ..Default::default()
         };
         unsafe { (ENCODE_API.encode_picture)(self.encoder.ptr, &mut encode_pic_params) }
@@ -271,6 +262,17 @@ impl CodecPictureParams {
             Self::H264(_) => NV_ENC_CODEC_H264_GUID,
             Self::Hevc(_) => NV_ENC_CODEC_HEVC_GUID,
             Self::Av1(_) => NV_ENC_CODEC_AV1_GUID,
+        }
+    }
+
+    /// Sets the `seiPayloadArrayCnt` field if supported by the codec.
+    /// For H.264 and HEVC, this sets the number of SEI payloads.
+    /// AV1 does not have this field and calling this function will panic.
+    pub fn set_sei_payload_array_cnt(&mut self, value: u32) {
+        match self {
+            Self::H264(params) => params.seiPayloadArrayCnt = value,
+            Self::Hevc(params) => params.seiPayloadArrayCnt = value,
+            Self::Av1(_params) => panic!("AV1 does not have seiPayloadArrayCnt"),
         }
     }
 }

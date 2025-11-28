@@ -1,51 +1,26 @@
 //! Defines `ENCODE_API`, which is a lazy static of [`EncodeAPI`].
 
 use core::ffi::{c_int, c_void};
+use std::sync::LazyLock;
 
 use crate::sys::nvEncodeAPI::{
-    NvEncodeAPICreateInstance,
-    NvEncodeAPIGetMaxSupportedVersion,
-    GUID,
-    NVENCAPI_MAJOR_VERSION,
-    NVENCAPI_MINOR_VERSION,
-    NVENCSTATUS,
-    NV_ENCODE_API_FUNCTION_LIST,
-    NV_ENCODE_API_FUNCTION_LIST_VER,
-    NV_ENC_BUFFER_FORMAT,
-    NV_ENC_CAPS_PARAM,
-    NV_ENC_CREATE_BITSTREAM_BUFFER,
-    NV_ENC_CREATE_INPUT_BUFFER,
-    NV_ENC_CREATE_MV_BUFFER,
-    NV_ENC_CUSTREAM_PTR,
-    NV_ENC_EVENT_PARAMS,
-    NV_ENC_INITIALIZE_PARAMS,
-    NV_ENC_INPUT_PTR,
-    NV_ENC_LOCK_BITSTREAM,
-    NV_ENC_LOCK_INPUT_BUFFER,
-    NV_ENC_LOOKAHEAD_PIC_PARAMS,
-    NV_ENC_MAP_INPUT_RESOURCE,
-    NV_ENC_MEONLY_PARAMS,
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS,
-    NV_ENC_OUTPUT_PTR,
-    NV_ENC_PIC_PARAMS,
-    NV_ENC_PRESET_CONFIG,
-    NV_ENC_RECONFIGURE_PARAMS,
-    NV_ENC_REGISTERED_PTR,
-    NV_ENC_REGISTER_RESOURCE,
-    NV_ENC_RESTORE_ENCODER_STATE_PARAMS,
-    NV_ENC_SEQUENCE_PARAM_PAYLOAD,
-    NV_ENC_STAT,
-    NV_ENC_TUNING_INFO,
+    NvEncodeAPICreateInstance, NvEncodeAPIGetMaxSupportedVersion, GUID, NVENCAPI_MAJOR_VERSION,
+    NVENCAPI_MINOR_VERSION, NVENCSTATUS, NV_ENCODE_API_FUNCTION_LIST,
+    NV_ENCODE_API_FUNCTION_LIST_VER, NV_ENC_BUFFER_FORMAT, NV_ENC_CAPS_PARAM,
+    NV_ENC_CREATE_BITSTREAM_BUFFER, NV_ENC_CREATE_INPUT_BUFFER, NV_ENC_CREATE_MV_BUFFER,
+    NV_ENC_CUSTREAM_PTR, NV_ENC_EVENT_PARAMS, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INPUT_PTR,
+    NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_INPUT_BUFFER, NV_ENC_LOOKAHEAD_PIC_PARAMS,
+    NV_ENC_MAP_INPUT_RESOURCE, NV_ENC_MEONLY_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS,
+    NV_ENC_OUTPUT_PTR, NV_ENC_PIC_PARAMS, NV_ENC_PRESET_CONFIG, NV_ENC_RECONFIGURE_PARAMS,
+    NV_ENC_REGISTERED_PTR, NV_ENC_REGISTER_RESOURCE, NV_ENC_RESTORE_ENCODER_STATE_PARAMS,
+    NV_ENC_SEQUENCE_PARAM_PAYLOAD, NV_ENC_STAT, NV_ENC_TUNING_INFO,
 };
-
-lazy_static! {
-    /// A lazy static for the Encoder API.
-    ///
-    /// You should not interact with this directly.
-    /// [`Encoder`](crate::Encoder) exposes much of the functionality and provides a nicer API.
-    pub static ref ENCODE_API: EncodeAPI =
-        EncodeAPI::new();
-}
+/// A lazy static for the Encoder API.
+///
+/// You should not interact with this directly.
+/// [`Encoder`](crate::Encoder) exposes much of the functionality and provides a
+/// nicer API.
+pub static ENCODE_API: LazyLock<EncodeAPI> = LazyLock::new(|| EncodeAPI::new());
 
 // Function type aliases to shorten later definitions.
 type OpenEncodeSession = unsafe extern "C" fn(*mut c_void, u32, *mut *mut c_void) -> NVENCSTATUS;

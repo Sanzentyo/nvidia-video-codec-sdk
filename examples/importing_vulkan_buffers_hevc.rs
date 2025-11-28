@@ -12,8 +12,8 @@ use ash::vk;
 use cudarc::driver::CudaContext;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
-        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
-        NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
+        NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_HEVC_GUID,
+        NV_ENC_HEVC_PROFILE_MAIN_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
     Encoder, EncoderInitParams,
 };
@@ -212,7 +212,7 @@ fn main() {
     let encode_guids = encoder
         .get_encode_guids()
         .expect("The encoder should be able to get the supported guids.");
-    let encode_guid = NV_ENC_CODEC_H264_GUID;
+    let encode_guid = NV_ENC_CODEC_HEVC_GUID;
     assert!(encode_guids.contains(&encode_guid));
 
     // Get available preset guids based on encode guid.
@@ -226,7 +226,7 @@ fn main() {
     let profile_guids = encoder
         .get_profile_guids(encode_guid)
         .expect("The encoder should have a profile for H.264.");
-    let profile_guid = NV_ENC_H264_PROFILE_HIGH_GUID;
+    let profile_guid = NV_ENC_HEVC_PROFILE_MAIN_GUID;
     assert!(profile_guids.contains(&profile_guid));
 
     // Get input formats based on the encode guid.
@@ -278,7 +278,7 @@ fn main() {
         .write(true)
         .create(true)
         .truncate(true)
-        .open("example_output.bin")
+        .open("example_output_hevc.bin")
         .expect("Permissions and available space should allow creating a new file.");
 
     // Generate each of the frames with Vulkan.

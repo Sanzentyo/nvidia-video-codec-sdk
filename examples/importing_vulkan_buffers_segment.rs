@@ -1,11 +1,6 @@
 #[cfg(windows)]
 use std::os::windows::io::FromRawHandle;
-use std::{
-    fs::{File, OpenOptions},
-    io::Write,
-    ptr::NonNull,
-    sync::Arc,
-};
+use std::{fs::File, io::Write, ptr::NonNull, sync::Arc};
 
 #[cfg(windows)]
 use ash::vk;
@@ -273,13 +268,7 @@ fn main() {
         })
         .collect();
 
-    // Write result to output file "example_output.bin".
-    let mut out_file = OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open("example_output.bin")
-        .expect("Permissions and available space should allow creating a new file.");
+    std::fs::create_dir_all("./output").expect("Creating output directory should succeed.");
 
     // Generate each of the frames with Vulkan.
     let file_descriptors = (0..FRAMES)
@@ -334,7 +323,11 @@ fn main() {
         dbg!(lock.picture_type());
 
         let data = lock.data();
-        out_file
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(format!("./output/{i:03}.bin"))
+            .unwrap()
             .write_all(data)
             .expect("Writing should succeed because `out_file` was opened with write permissions.");
     }
