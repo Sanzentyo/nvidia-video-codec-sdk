@@ -9,9 +9,13 @@ use std::fmt::Debug;
 
 use super::{api::ENCODE_API, encoder::Encoder, result::EncodeError};
 use crate::{
-    EncoderInput, EncoderOutput, sys::nvEncodeAPI::{
-        _NV_ENC_PIC_FLAGS, GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID, NV_ENC_CODEC_HEVC_GUID, NV_ENC_CODEC_PIC_PARAMS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_AV1, NV_ENC_PIC_PARAMS_H264, NV_ENC_PIC_PARAMS_HEVC, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT, NV_ENC_PIC_TYPE
-    }
+    sys::nvEncodeAPI::{
+        GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
+        NV_ENC_CODEC_HEVC_GUID, NV_ENC_CODEC_PIC_PARAMS, NV_ENC_PIC_FLAGS, NV_ENC_PIC_PARAMS,
+        NV_ENC_PIC_PARAMS_AV1, NV_ENC_PIC_PARAMS_H264, NV_ENC_PIC_PARAMS_HEVC,
+        NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT, NV_ENC_PIC_TYPE,
+    },
+    EncoderInput, EncoderOutput,
 };
 
 /// An encoding session to create input/output buffers and encode frames.
@@ -180,7 +184,7 @@ impl Session {
             inputTimeStamp: params.input_timestamp,
             codecPicParams: params.codec_params.map(Into::into).unwrap_or_default(),
             pictureType: params.picture_type,
-            encodePicFlags: params.encode_pic_flags.map(|flags| flags as u32).unwrap_or(0),
+            encodePicFlags: params.encode_pic_flags,
             ..Default::default()
         };
         unsafe { (ENCODE_API.encode_picture)(self.encoder.ptr, &mut encode_pic_params) }
@@ -227,7 +231,9 @@ pub struct EncodePictureParams {
     /// Codec-specific parameters
     pub codec_params: Option<CodecPictureParams>,
     /// encodePicFlags parameters, if this is None, default
-    pub encode_pic_flags: Option<_NV_ENC_PIC_FLAGS>,
+    pub encode_pic_flags: u32,
+    /// Encode frame idx
+    pub encode_frame_idx: u64,
 }
 
 impl Default for EncodePictureParams {
@@ -236,8 +242,26 @@ impl Default for EncodePictureParams {
             input_timestamp: 0,
             picture_type: NV_ENC_PIC_TYPE::NV_ENC_PIC_TYPE_UNKNOWN,
             codec_params: None,
-            encode_pic_flags: None,
+            encode_pic_flags: 0,
+            encode_frame_idx: 0,
         }
+    }
+}
+
+impl EncodePictureParams {
+    /// Adds an encode picture flag.
+    #[inline(always)]
+    pub fn with_encode_pic_flag<const FLAG_NUM: usize>(
+        mut self,
+        flags: [NV_ENC_PIC_FLAGS; FLAG_NUM],
+    ) -> Self
+    where
+        [NV_ENC_PIC_FLAGS; FLAG_NUM]: Sized, // to block case FLAG_NUM <= 0
+    {
+        for flag in flags {
+            self.encode_pic_flags |= flag as u32;
+        }
+        self
     }
 }
 
