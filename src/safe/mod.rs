@@ -6,6 +6,7 @@
 mod api;
 mod buffer;
 mod builders;
+mod decoder;
 mod encoder;
 mod result;
 mod session;
@@ -14,6 +15,7 @@ pub use api::{EncodeAPI, ENCODE_API};
 pub use buffer::{
     Bitstream, BitstreamLock, Buffer, BufferLock, EncoderInput, EncoderOutput, RegisteredResource,
 };
+pub use decoder::{DecodeCodec, DecodeError, DecodeOptions, DecodedRgbFrame, Decoder};
 pub use encoder::{Encoder, EncoderInitParams};
 pub use result::{EncodeError, ErrorKind};
 pub use session::{CodecPictureParams, EncodePictureParams, Session};

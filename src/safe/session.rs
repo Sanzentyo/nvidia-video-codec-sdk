@@ -185,6 +185,7 @@ impl Session {
             codecPicParams: params.codec_params.map(Into::into).unwrap_or_default(),
             pictureType: params.picture_type,
             encodePicFlags: params.encode_pic_flags,
+            frameIdx: params.encode_frame_idx.min(u64::from(u32::MAX)) as u32,
             ..Default::default()
         };
         unsafe { (ENCODE_API.encode_picture)(self.encoder.ptr, &mut encode_pic_params) }

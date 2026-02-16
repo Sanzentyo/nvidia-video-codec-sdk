@@ -427,6 +427,37 @@ impl BufferLock<'_, '_> {
         data.as_ptr()
             .copy_to(self.data_ptr.cast::<u8>(), data.len());
     }
+
+    /// Write row-oriented data to the buffer while respecting destination pitch.
+    ///
+    /// # Safety
+    ///
+    /// - `data` must contain at least `row_bytes * rows` bytes.
+    /// - `row_bytes` must be less than or equal to the destination pitch.
+    /// - `rows` must not exceed the height of the locked buffer.
+    pub unsafe fn write_pitched(&mut self, data: &[u8], row_bytes: usize, rows: usize) {
+        let pitch = self.pitch as usize;
+        assert!(
+            row_bytes <= pitch,
+            "row_bytes must be less than or equal to pitch",
+        );
+        let required_src = row_bytes
+            .checked_mul(rows)
+            .expect("row_bytes * rows should not overflow");
+        assert!(
+            data.len() >= required_src,
+            "data length is too small for row_bytes * rows",
+        );
+
+        let dst_base = self.data_ptr.cast::<u8>();
+        for row in 0..rows {
+            let src_offset = row * row_bytes;
+            let dst_offset = row * pitch;
+            data.as_ptr()
+                .add(src_offset)
+                .copy_to_nonoverlapping(dst_base.add(dst_offset), row_bytes);
+        }
+    }
 }
 
 impl Drop for BufferLock<'_, '_> {

@@ -24,7 +24,8 @@
 //!
 //! # Decoding
 //!
-//! There is no safe wrapper yet.
+//! The main entrypoint for the decoder API is [`Decoder`].
+//! It accepts complete access units and returns decoded RGB frames.
 
 #![warn(
     missing_docs,
