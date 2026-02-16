@@ -3,7 +3,7 @@
 use std::{
     collections::VecDeque,
     ffi::{c_int, c_longlong, c_ulong, c_void},
-    fmt, ptr,
+    ptr,
     sync::{Arc, Mutex},
 };
 
@@ -12,6 +12,7 @@ use cudarc::driver::{
     sys::CUresult,
     CudaContext,
 };
+use thiserror::Error;
 
 use crate::sys::{
     cuviddec::{
@@ -96,11 +97,13 @@ impl DecodedRgbFrame {
 }
 
 /// Decoder error.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub enum DecodeError {
     /// CUDA Driver API error.
+    #[error("cuda error: {0:?}")]
     Cuda(DriverError),
     /// NVDEC API error.
+    #[error("{operation} failed with {code:?}")]
     Nvdec {
         /// Operation name.
         operation: &'static str,
@@ -108,28 +111,15 @@ pub enum DecodeError {
         code: CUresult,
     },
     /// Unsupported input or platform capability.
+    #[error("unsupported: {0}")]
     Unsupported(String),
     /// Invalid caller input.
+    #[error("invalid input: {0}")]
     InvalidInput(String),
     /// Internal decoder state error.
+    #[error("internal error: {0}")]
     Internal(String),
 }
-
-impl fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Cuda(err) => write!(f, "cuda error: {err:?}"),
-            Self::Nvdec { operation, code } => {
-                write!(f, "{operation} failed with {code:?}")
-            }
-            Self::Unsupported(msg) => write!(f, "unsupported: {msg}"),
-            Self::InvalidInput(msg) => write!(f, "invalid input: {msg}"),
-            Self::Internal(msg) => write!(f, "internal error: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for DecodeError {}
 
 impl From<DriverError> for DecodeError {
     fn from(value: DriverError) -> Self {

@@ -2,10 +2,11 @@
 //! [`NVENCSTATUS`](crate::sys::nvEncodeAPI::NVENCSTATUS) to provide ergonomic
 //! error handling.
 
-use std::{error::Error, ffi::CStr, fmt};
+use std::ffi::CStr;
 
 use super::{api::ENCODE_API, encoder::Encoder};
 use crate::sys::nvEncodeAPI::NVENCSTATUS;
+use thiserror::Error;
 
 /// Wrapper enum around [`NVENCSTATUS`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -112,7 +113,8 @@ pub enum ErrorKind {
 ///
 /// This struct also contains a string with additional info
 /// when it is relevant and available.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Error)]
+#[error("{kind:?}{display_suffix}", display_suffix = self.display_suffix())]
 pub struct EncodeError {
     kind: ErrorKind,
     string: Option<String>,
@@ -130,18 +132,14 @@ impl EncodeError {
     pub fn string(&self) -> Option<&str> {
         self.string.as_deref()
     }
-}
 
-impl fmt::Display for EncodeError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match &self.string {
-            Some(s) => write!(f, "{:?}: {s}", self.kind),
-            None => write!(f, "{:?}", self.kind),
-        }
+    fn display_suffix(&self) -> String {
+        self.string
+            .as_deref()
+            .map(|s| format!(": {s}"))
+            .unwrap_or_default()
     }
 }
-
-impl Error for EncodeError {}
 
 impl From<NVENCSTATUS> for ErrorKind {
     fn from(status: NVENCSTATUS) -> Self {
