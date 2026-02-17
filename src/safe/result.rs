@@ -1,12 +1,42 @@
-//! Defines a wrapper around
-//! [`NVENCSTATUS`](crate::sys::nvEncodeAPI::NVENCSTATUS) to provide ergonomic
-//! error handling.
+//! Defines safe wrapper error types.
 
 use std::ffi::CStr;
 
 use super::{api::ENCODE_API, encoder::Encoder};
 use crate::sys::nvEncodeAPI::NVENCSTATUS;
+use cudarc::driver::{result::DriverError, sys::CUresult};
 use thiserror::Error;
+
+/// Decoder error.
+#[derive(Debug, Clone, Error)]
+pub enum DecodeError {
+    /// CUDA Driver API error.
+    #[error("cuda error: {0:?}")]
+    Cuda(DriverError),
+    /// NVDEC API error.
+    #[error("{operation} failed with {code:?}")]
+    Nvdec {
+        /// Operation name.
+        operation: &'static str,
+        /// CUDA error code.
+        code: CUresult,
+    },
+    /// Unsupported input or platform capability.
+    #[error("unsupported: {0}")]
+    Unsupported(String),
+    /// Invalid caller input.
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    /// Internal decoder state error.
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+impl From<DriverError> for DecodeError {
+    fn from(value: DriverError) -> Self {
+        Self::Cuda(value)
+    }
+}
 
 /// Wrapper enum around [`NVENCSTATUS`].
 #[derive(Debug, Clone, Copy, Hash, PartialEq, Eq, PartialOrd, Ord)]

@@ -8,11 +8,12 @@ use std::{
 };
 
 use cudarc::driver::{
-    result::{self, DriverError},
+    result::{self as driver_result},
     sys::CUresult,
     CudaContext,
 };
-use thiserror::Error;
+
+use super::result::DecodeError;
 
 use crate::sys::{
     cuviddec::{
@@ -93,37 +94,6 @@ impl DecodedRgbFrame {
     #[must_use]
     pub fn into_tuple(self) -> (Vec<u8>, u32, u32) {
         (self.data, self.width, self.height)
-    }
-}
-
-/// Decoder error.
-#[derive(Debug, Clone, Error)]
-pub enum DecodeError {
-    /// CUDA Driver API error.
-    #[error("cuda error: {0:?}")]
-    Cuda(DriverError),
-    /// NVDEC API error.
-    #[error("{operation} failed with {code:?}")]
-    Nvdec {
-        /// Operation name.
-        operation: &'static str,
-        /// CUDA error code.
-        code: CUresult,
-    },
-    /// Unsupported input or platform capability.
-    #[error("unsupported: {0}")]
-    Unsupported(String),
-    /// Invalid caller input.
-    #[error("invalid input: {0}")]
-    InvalidInput(String),
-    /// Internal decoder state error.
-    #[error("internal error: {0}")]
-    Internal(String),
-}
-
-impl From<DriverError> for DecodeError {
-    fn from(value: DriverError) -> Self {
-        Self::Cuda(value)
     }
 }
 
@@ -358,7 +328,7 @@ impl Decoder {
         let mut nv12 = vec![0_u8; nv12_bytes];
 
         // SAFETY: `dev_ptr` points to `nv12_bytes` mapped bytes for this frame.
-        unsafe { result::memcpy_dtoh_sync(nv12.as_mut_slice(), dev_ptr)? };
+        unsafe { driver_result::memcpy_dtoh_sync(nv12.as_mut_slice(), dev_ptr)? };
         let rgb = nv12_to_rgb24(&nv12, pitch, layout)?;
 
         Ok(DecodedRgbFrame {
