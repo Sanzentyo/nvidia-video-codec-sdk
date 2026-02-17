@@ -10,13 +10,15 @@ mod version;
 #[allow(warnings)]
 #[rustfmt::skip]
 #[cfg(target_os = "linux")]
-mod linux_sys;
+#[path = "linux_sys/mod.rs"]
+mod linux_bindings;
 #[cfg(target_os = "linux")]
-pub use linux_sys::*;
+pub use self::linux_bindings::*;
 
 #[allow(warnings)]
 #[rustfmt::skip]
 #[cfg(target_os = "windows")]
-mod windows_sys;
+#[path = "windows_sys/mod.rs"]
+mod windows_bindings;
 #[cfg(target_os = "windows")]
-pub use windows_sys::*;
+pub use self::windows_bindings::*;
