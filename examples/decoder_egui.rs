@@ -8,6 +8,9 @@ use anyhow::{anyhow, bail, Context, Result};
 use cudarc::driver::CudaContext;
 use eframe::egui::{self, ColorImage};
 use nvidia_video_codec_sdk::{DecodeCodec, DecodeOptions, DecodedRgbFrame, Decoder};
+use rtc::media::io::h26x_reader::H26xReader;
+use rtc::shared::error::Error as RtcError;
+use std::io::Cursor;
 
 const CLOCK_RATE_90K: i64 = 90_000;
 
@@ -204,7 +207,11 @@ fn rgb_to_rgba(frame: DecodedRgbFrame) -> Vec<u8> {
 }
 
 fn build_access_units(bitstream: &[u8], codec: DecodeCodec) -> Result<Vec<Vec<u8>>> {
-    let nals = split_annexb_nals(bitstream);
+    let nals = match codec {
+        DecodeCodec::H264 => read_h26x_nals(bitstream, false)?,
+        DecodeCodec::H265 => read_h26x_nals(bitstream, true)?,
+        DecodeCodec::Av1 => split_annexb_nals(bitstream),
+    };
     if nals.is_empty() {
         return Ok(Vec::new());
     }
@@ -214,6 +221,21 @@ fn build_access_units(bitstream: &[u8], codec: DecodeCodec) -> Result<Vec<Vec<u8
         DecodeCodec::Av1 => nals.into_iter().map(|nal| with_start_code(&nal)).collect(),
     };
     Ok(access_units)
+}
+
+fn read_h26x_nals(bitstream: &[u8], is_hevc: bool) -> Result<Vec<Vec<u8>>> {
+    let mut reader = H26xReader::new(Cursor::new(bitstream), 4096, is_hevc);
+    let mut nals = Vec::new();
+
+    loop {
+        match reader.next_nal() {
+            Ok(nal) => nals.push(nal.data().to_vec()),
+            Err(RtcError::ErrIoEOF) => break,
+            Err(err) => return Err(anyhow!("failed to parse h26x Annex-B stream: {err}")),
+        }
+    }
+
+    Ok(nals)
 }
 
 fn split_annexb_nals(data: &[u8]) -> Vec<Vec<u8>> {
