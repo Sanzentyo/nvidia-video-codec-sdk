@@ -5,15 +5,20 @@
 //! frames. The [`Session`] also stores some information such as the encode
 //! width and height so that you do not have to keep repeating it each time.
 
+#[cfg(target_os = "windows")]
+use std::ffi::c_void;
 use std::fmt::Debug;
 
 use super::{api::ENCODE_API, encoder::Encoder, result::EncodeError};
+#[cfg(target_os = "windows")]
+use crate::sys::nvEncodeAPI::{NV_ENC_EVENT_PARAMS, NV_ENC_EVENT_PARAMS_VER};
 use crate::{
     sys::nvEncodeAPI::{
         GUID, NV_ENC_BUFFER_FORMAT, NV_ENC_CODEC_AV1_GUID, NV_ENC_CODEC_H264_GUID,
         NV_ENC_CODEC_HEVC_GUID, NV_ENC_CODEC_PIC_PARAMS, NV_ENC_PIC_FLAGS, NV_ENC_PIC_PARAMS,
         NV_ENC_PIC_PARAMS_AV1, NV_ENC_PIC_PARAMS_H264, NV_ENC_PIC_PARAMS_HEVC,
-        NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT, NV_ENC_PIC_TYPE,
+        NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT, NV_ENC_PIC_TYPE, NV_ENC_RECONFIGURE_PARAMS,
+        NV_ENC_RECONFIGURE_PARAMS_VER,
     },
     EncoderInput, EncoderOutput,
 };
@@ -30,6 +35,75 @@ pub struct Session {
     pub(crate) height: u32,
     pub(crate) buffer_format: NV_ENC_BUFFER_FORMAT,
     pub(crate) encode_guid: GUID,
+}
+
+/// Safe reconfigure options for an existing encoder session.
+#[derive(Debug)]
+pub struct ReconfigureParams<'a> {
+    init_params: super::encoder::EncoderInitParams<'a>,
+    reset_encoder: bool,
+    force_idr: bool,
+}
+
+impl<'a> ReconfigureParams<'a> {
+    /// Create reconfigure parameters from a new initialize parameter set.
+    #[must_use]
+    pub fn new(init_params: super::encoder::EncoderInitParams<'a>) -> Self {
+        Self {
+            init_params,
+            reset_encoder: false,
+            force_idr: false,
+        }
+    }
+
+    /// Set whether to reset encoder state while reconfiguring.
+    #[must_use]
+    pub fn reset_encoder(mut self, reset_encoder: bool) -> Self {
+        self.reset_encoder = reset_encoder;
+        self
+    }
+
+    /// Set whether to force an IDR frame immediately after reconfiguration.
+    #[must_use]
+    pub fn force_idr(mut self, force_idr: bool) -> Self {
+        self.force_idr = force_idr;
+        self
+    }
+}
+
+#[cfg(target_os = "windows")]
+#[derive(Debug)]
+/// RAII wrapper for a registered NVENC async completion event.
+pub struct WindowsAsyncEvent<'a> {
+    encoder: &'a Encoder,
+    event: *mut c_void,
+    is_registered: bool,
+}
+
+#[cfg(target_os = "windows")]
+impl<'a> WindowsAsyncEvent<'a> {
+    /// Returns the raw completion event handle passed at registration time.
+    #[must_use]
+    pub fn completion_event(&self) -> *mut c_void {
+        self.event
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for WindowsAsyncEvent<'_> {
+    fn drop(&mut self) {
+        if !self.is_registered {
+            return;
+        }
+        let mut params = NV_ENC_EVENT_PARAMS {
+            version: NV_ENC_EVENT_PARAMS_VER,
+            completionEvent: self.event,
+            ..Default::default()
+        };
+        let _ = unsafe { (ENCODE_API.unregister_async_event)(self.encoder.ptr, &mut params) }
+            .result(self.encoder);
+        self.is_registered = false;
+    }
 }
 
 impl Session {
@@ -188,8 +262,77 @@ impl Session {
             frameIdx: params.encode_frame_idx.min(u64::from(u32::MAX)) as u32,
             ..Default::default()
         };
+        #[cfg(target_os = "windows")]
+        {
+            encode_pic_params.completionEvent =
+                params.completion_event.unwrap_or(std::ptr::null_mut());
+        }
         unsafe { (ENCODE_API.encode_picture)(self.encoder.ptr, &mut encode_pic_params) }
             .result(&self.encoder)
+    }
+
+    /// Reconfigure an active encoding session.
+    ///
+    /// If resolution changes, `force_idr` must be enabled.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ErrorKind::InvalidParam`](super::ErrorKind::InvalidParam)
+    /// when resolution changes without `force_idr(true)`, or forwards NVENC
+    /// errors from `NvEncReconfigureEncoder`.
+    pub fn reconfigure<'a>(
+        &mut self,
+        mut params: ReconfigureParams<'a>,
+    ) -> Result<(), EncodeError> {
+        let init = params.init_params.as_raw_mut();
+        let new_width = init.encodeWidth;
+        let new_height = init.encodeHeight;
+        let resolution_changed = new_width != self.width || new_height != self.height;
+        if resolution_changed && !params.force_idr {
+            return Err(EncodeError::new_invalid_param(
+                "resolution change requires force_idr=true".to_string(),
+            ));
+        }
+
+        let mut reconfigure_params = NV_ENC_RECONFIGURE_PARAMS {
+            version: NV_ENC_RECONFIGURE_PARAMS_VER,
+            reInitEncodeParams: *init,
+            ..Default::default()
+        };
+        reconfigure_params.set_resetEncoder(u32::from(params.reset_encoder));
+        reconfigure_params.set_forceIDR(u32::from(params.force_idr));
+
+        unsafe { (ENCODE_API.reconfigure_encoder)(self.encoder.ptr, &mut reconfigure_params) }
+            .result(&self.encoder)?;
+
+        self.width = new_width;
+        self.height = new_height;
+        Ok(())
+    }
+
+    /// Register a Windows completion event for asynchronous encode mode.
+    ///
+    /// # Errors
+    ///
+    /// Returns an NVENC error if event registration fails.
+    #[cfg(target_os = "windows")]
+    pub fn register_async_event(
+        &self,
+        completion_event: *mut c_void,
+    ) -> Result<WindowsAsyncEvent<'_>, EncodeError> {
+        let mut params = NV_ENC_EVENT_PARAMS {
+            version: NV_ENC_EVENT_PARAMS_VER,
+            completionEvent: completion_event,
+            ..Default::default()
+        };
+        unsafe { (ENCODE_API.register_async_event)(self.encoder.ptr, &mut params) }
+            .result(&self.encoder)?;
+
+        Ok(WindowsAsyncEvent {
+            encoder: &self.encoder,
+            event: completion_event,
+            is_registered: true,
+        })
     }
 
     /// Send an EOS notifications to flush the encoder.
@@ -235,6 +378,9 @@ pub struct EncodePictureParams {
     pub encode_pic_flags: u32,
     /// Encode frame idx
     pub encode_frame_idx: u64,
+    /// Windows completion event for asynchronous mode.
+    #[cfg(target_os = "windows")]
+    pub completion_event: Option<*mut c_void>,
 }
 
 impl Default for EncodePictureParams {
@@ -245,6 +391,8 @@ impl Default for EncodePictureParams {
             codec_params: None,
             encode_pic_flags: 0,
             encode_frame_idx: 0,
+            #[cfg(target_os = "windows")]
+            completion_event: None,
         }
     }
 }

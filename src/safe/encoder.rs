@@ -10,10 +10,11 @@ use cudarc::driver::CudaContext;
 
 use super::{api::ENCODE_API, result::EncodeError, session::Session};
 use crate::sys::nvEncodeAPI::{
-    GUID, NVENCAPI_VERSION, NV_ENC_BUFFER_FORMAT, NV_ENC_CONFIG, NV_ENC_CONFIG_VER,
-    NV_ENC_DEVICE_TYPE, NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER,
-    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER,
-    NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_TUNING_INFO,
+    GUID, NVENCAPI_VERSION, NV_ENC_BUFFER_FORMAT, NV_ENC_CAPS, NV_ENC_CAPS_PARAM,
+    NV_ENC_CAPS_PARAM_VER, NV_ENC_CONFIG, NV_ENC_CONFIG_VER, NV_ENC_DEVICE_TYPE,
+    NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS,
+    NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER,
+    NV_ENC_TUNING_INFO,
 };
 
 /// Entrypoint for the Encoder API.
@@ -324,6 +325,27 @@ impl Encoder {
         Ok(supported_input_formats)
     }
 
+    /// Query a raw capability value for a codec GUID.
+    ///
+    /// This is a direct wrapper over `NvEncGetEncodeCaps` and can be used for
+    /// capability checks that are not covered by dedicated helper methods.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `encode_guid` is invalid, `cap` is not supported
+    /// by the current driver/GPU combination, or the NVENC call fails.
+    pub fn get_capability(&self, encode_guid: GUID, cap: NV_ENC_CAPS) -> Result<i32, EncodeError> {
+        let mut caps_param = NV_ENC_CAPS_PARAM {
+            version: NV_ENC_CAPS_PARAM_VER,
+            capsToQuery: cap,
+            ..Default::default()
+        };
+        let mut value = 0;
+        unsafe { (ENCODE_API.get_encode_caps)(self.ptr, encode_guid, &mut caps_param, &mut value) }
+            .result(self)?;
+        Ok(value)
+    }
+
     /// Get the preset config struct from the given codec GUID, preset GUID,
     /// and tuning info.
     ///
@@ -531,5 +553,16 @@ impl<'a> EncoderInitParams<'a> {
     pub fn enable_picture_type_decision(&mut self) -> &mut Self {
         self.param.enablePTD = 1;
         self
+    }
+
+    /// Enable asynchronous encode mode.
+    #[cfg(target_os = "windows")]
+    pub fn enable_encode_async(&mut self) -> &mut Self {
+        self.param.enableEncodeAsync = 1;
+        self
+    }
+
+    pub(crate) fn as_raw_mut(&mut self) -> &mut NV_ENC_INITIALIZE_PARAMS {
+        &mut self.param
     }
 }

@@ -7,7 +7,7 @@ use image::{ImageBuffer, Rgba};
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         NV_ENC_BUFFER_FORMAT, NV_ENC_CLOCK_TIMESTAMP_SET, NV_ENC_CODEC_H264_GUID,
-        NV_ENC_DISPLAY_PIC_STRUCT, NV_ENC_PRESET_P1_GUID, NV_ENC_TIME_CODE, NV_ENC_TUNING_INFO,
+        NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
     EncodePictureParams, Encoder, EncoderInitParams,
 };
@@ -16,7 +16,6 @@ const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
 const FRAME_COUNT: u32 = 30;
 const FPS: u32 = 30;
-const MAX_NUM_CLOCK_TS: usize = 3;
 
 /// タイムコード計算ユーティリティ
 struct TimeCodeCalculator {

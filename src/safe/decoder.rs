@@ -9,7 +9,7 @@ use std::{
 
 use cudarc::driver::{
     result::{self as driver_result},
-    sys::CUresult,
+    sys::{CUresult, CUstream},
     CudaContext,
 };
 
@@ -25,8 +25,8 @@ use crate::sys::{
     },
     nvcuvid::{
         cuvidCreateVideoParser, cuvidDestroyVideoParser, cuvidParseVideoData, CUvideopacketflags,
-        CUvideoparser, CUVIDEOFORMAT, CUVIDPARSERDISPINFO, CUVIDPARSERPARAMS,
-        CUVIDSOURCEDATAPACKET,
+        CUvideoparser, CUVIDEOFORMAT, CUVIDOPERATINGPOINTINFO, CUVIDPARSERDISPINFO,
+        CUVIDPARSERPARAMS, CUVIDSEIMESSAGEINFO, CUVIDSOURCEDATAPACKET,
     },
 };
 
@@ -62,6 +62,18 @@ pub struct DecodeOptions {
     pub initial_decode_surfaces: u32,
     /// For AV1, `true` if the input stream is Annex-B, `false` for low-overhead OBU.
     pub av1_annexb: bool,
+    /// Optional output stream for `cuvidMapVideoFrame64` processing.
+    pub external_stream: Option<CUstream>,
+    /// Optional AV1 operating point to select.
+    pub av1_operating_point: Option<u32>,
+    /// Whether to output all AV1 layers when using operating point callback.
+    pub av1_all_layers: bool,
+    /// Optional explicit crop rectangle `(left, top, right, bottom)`.
+    pub crop_rect: Option<DecodeRect>,
+    /// Optional explicit output resize dimensions `(width, height)`.
+    pub resize_dim: Option<(u32, u32)>,
+    /// Enable SEI callback extraction into an internal queue.
+    pub enable_sei_messages: bool,
 }
 
 impl Default for DecodeOptions {
@@ -71,8 +83,38 @@ impl Default for DecodeOptions {
             timestamp_clock_rate: 90_000,
             initial_decode_surfaces: 1,
             av1_annexb: false,
+            external_stream: None,
+            av1_operating_point: None,
+            av1_all_layers: false,
+            crop_rect: None,
+            resize_dim: None,
+            enable_sei_messages: false,
         }
     }
+}
+
+/// Decoder crop rectangle.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodeRect {
+    /// Left boundary in pixels.
+    pub left: u32,
+    /// Top boundary in pixels.
+    pub top: u32,
+    /// Right boundary in pixels (exclusive).
+    pub right: u32,
+    /// Bottom boundary in pixels (exclusive).
+    pub bottom: u32,
+}
+
+/// Decoded SEI message metadata and payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeiMessage {
+    /// Decoder picture index associated with this SEI message.
+    pub picture_index: u32,
+    /// Codec-specific SEI payload type.
+    pub payload_type: u8,
+    /// Copied SEI payload bytes.
+    pub payload: Vec<u8>,
 }
 
 /// One decoded RGB frame.
@@ -137,6 +179,8 @@ impl Decoder {
             pfnSequenceCallback: Some(sequence_callback),
             pfnDecodePicture: Some(decode_callback),
             pfnDisplayPicture: Some(display_callback),
+            pfnGetOperatingPoint: Some(operating_point_callback),
+            pfnGetSEIMsg: Some(sei_message_callback),
             ..Default::default()
         };
         parser_params.set_bAnnexb(u32::from(codec == DecodeCodec::Av1 && options.av1_annexb));
@@ -226,6 +270,15 @@ impl Decoder {
         self.drain_display_queue()
     }
 
+    /// Drain and return collected SEI messages.
+    ///
+    /// This returns an empty vector when SEI collection is disabled via
+    /// [`DecodeOptions::enable_sei_messages`].
+    pub fn drain_sei_messages(&mut self) -> Vec<SeiMessage> {
+        let mut state = lock_state(&self.bridge.state);
+        std::mem::take(&mut state.sei_queue)
+    }
+
     fn ensure_no_callback_error(&self) -> Result<(), DecodeError> {
         let state = lock_state(&self.bridge.state);
         match &state.sticky_error {
@@ -281,6 +334,9 @@ impl Decoder {
             unpaired_field: 0,
             ..Default::default()
         };
+        if let Some(stream) = self.bridge.options.external_stream {
+            proc_params.output_stream = stream;
+        }
         let mut dev_ptr: u64 = 0;
         let mut pitch: u32 = 0;
 
@@ -399,6 +455,7 @@ struct DecoderState {
     decoder: Option<CUvideodecoder>,
     sticky_error: Option<DecodeError>,
     display_queue: VecDeque<DisplayQueueEntry>,
+    sei_queue: Vec<SeiMessage>,
     layout: OutputLayout,
 }
 
@@ -431,13 +488,16 @@ impl DecoderState {
             ));
         }
 
-        let layout = derive_output_layout(format);
+        validate_options(format, options)?;
+        let target_rect = resolve_target_rect(format, options)?;
+        let (target_width, target_height) = resolve_target_size(format, options, &target_rect)?;
         let num_surfaces = u32::from(format.min_num_decode_surfaces.max(1));
         if let Some(decoder) = self.decoder {
             let mut reconfigure_info = build_reconfigure_info(
                 format,
-                layout.visible_width,
-                layout.visible_height,
+                target_rect,
+                target_width,
+                target_height,
                 num_surfaces,
             );
             check_nvdec(
@@ -450,8 +510,9 @@ impl DecoderState {
                 codec,
                 options,
                 format,
-                layout.visible_width,
-                layout.visible_height,
+                target_rect,
+                target_width,
+                target_height,
                 num_surfaces,
             );
             let mut decoder = ptr::null_mut();
@@ -463,7 +524,7 @@ impl DecoderState {
             self.decoder = Some(decoder);
         }
 
-        self.layout = layout;
+        self.layout = build_output_layout(target_width, target_height);
         Ok(num_surfaces as c_int)
     }
 }
@@ -559,6 +620,65 @@ unsafe extern "C" fn display_callback(
     1
 }
 
+unsafe extern "C" fn operating_point_callback(
+    user_data: *mut c_void,
+    _op_info: *mut CUVIDOPERATINGPOINTINFO,
+) -> c_int {
+    let Some(bridge) = bridge_from_user_data(user_data) else {
+        return 0;
+    };
+
+    if bridge.codec != DecodeCodec::Av1 {
+        return -1;
+    }
+
+    let operating_point = bridge.options.av1_operating_point.unwrap_or(0).min(0x3ff);
+    let all_layers = u32::from(bridge.options.av1_all_layers) << 10;
+    (operating_point | all_layers) as c_int
+}
+
+unsafe extern "C" fn sei_message_callback(
+    user_data: *mut c_void,
+    sei_info: *mut CUVIDSEIMESSAGEINFO,
+) -> c_int {
+    let Some(bridge) = bridge_from_user_data(user_data) else {
+        return 0;
+    };
+    if !bridge.options.enable_sei_messages {
+        return 1;
+    }
+    if sei_info.is_null() {
+        return 1;
+    }
+
+    let mut state = lock_state(&bridge.state);
+    // SAFETY: pointer checked for null above.
+    let sei_info = unsafe { &*sei_info };
+    if sei_info.pSEIData.is_null() || sei_info.pSEIMessage.is_null() {
+        return 1;
+    }
+
+    let count = sei_info.sei_message_count as usize;
+    // SAFETY: CUVID callback provides a contiguous array of messages.
+    let messages = unsafe { std::slice::from_raw_parts(sei_info.pSEIMessage, count) };
+    let mut offset = 0usize;
+    let payload_base = sei_info.pSEIData.cast::<u8>();
+
+    for message in messages {
+        let size = message.sei_message_size as usize;
+        // SAFETY: payload bytes are owned by parser for callback duration.
+        let payload =
+            unsafe { std::slice::from_raw_parts(payload_base.add(offset), size).to_vec() };
+        state.sei_queue.push(SeiMessage {
+            picture_index: sei_info.picIdx,
+            payload_type: message.sei_message_type,
+            payload,
+        });
+        offset = offset.saturating_add(size);
+    }
+    1
+}
+
 fn check_decoder_caps(codec: DecodeCodec) -> Result<(), DecodeError> {
     let mut caps = CUVIDDECODECAPS {
         eCodecType: codec.as_cuda_codec(),
@@ -590,8 +710,9 @@ fn build_decode_create_info(
     codec: DecodeCodec,
     _options: DecodeOptions,
     format: &CUVIDEOFORMAT,
-    _visible_width: u32,
-    _visible_height: u32,
+    target_rect: DecodeRect,
+    target_width: u32,
+    target_height: u32,
     num_surfaces: u32,
 ) -> CUVIDDECODECREATEINFO {
     CUVIDDECODECREATEINFO {
@@ -606,22 +727,22 @@ fn build_decode_create_info(
         ulMaxWidth: format.coded_width as c_ulong,
         ulMaxHeight: format.coded_height as c_ulong,
         display_area: to_create_rect(
-            format.display_area.left,
-            format.display_area.top,
-            format.display_area.right,
-            format.display_area.bottom,
+            target_rect.left as i32,
+            target_rect.top as i32,
+            target_rect.right as i32,
+            target_rect.bottom as i32,
         ),
         OutputFormat: cudaVideoSurfaceFormat::cudaVideoSurfaceFormat_NV12,
         DeinterlaceMode: cudaVideoDeinterlaceMode::cudaVideoDeinterlaceMode_Weave,
-        ulTargetWidth: format.coded_width as c_ulong,
-        ulTargetHeight: format.coded_height as c_ulong,
+        ulTargetWidth: target_width as c_ulong,
+        ulTargetHeight: target_height as c_ulong,
         ulNumOutputSurfaces: 2,
         vidLock: ptr::null_mut(),
         target_rect: to_create_target_rect(
-            0,
-            0,
-            format.coded_width as i32,
-            format.coded_height as i32,
+            target_rect.left as i32,
+            target_rect.top as i32,
+            target_rect.right as i32,
+            target_rect.bottom as i32,
         ),
         enableHistogram: 0,
         ..Default::default()
@@ -630,62 +751,129 @@ fn build_decode_create_info(
 
 fn build_reconfigure_info(
     format: &CUVIDEOFORMAT,
-    _visible_width: u32,
-    _visible_height: u32,
+    target_rect: DecodeRect,
+    target_width: u32,
+    target_height: u32,
     num_surfaces: u32,
 ) -> CUVIDRECONFIGUREDECODERINFO {
     CUVIDRECONFIGUREDECODERINFO {
         ulWidth: format.coded_width,
         ulHeight: format.coded_height,
-        ulTargetWidth: format.coded_width,
-        ulTargetHeight: format.coded_height,
+        ulTargetWidth: target_width,
+        ulTargetHeight: target_height,
         ulNumDecodeSurfaces: num_surfaces,
         display_area: to_reconfigure_rect(
-            format.display_area.left,
-            format.display_area.top,
-            format.display_area.right,
-            format.display_area.bottom,
+            target_rect.left as i32,
+            target_rect.top as i32,
+            target_rect.right as i32,
+            target_rect.bottom as i32,
         ),
         target_rect: to_reconfigure_target_rect(
-            0,
-            0,
-            format.coded_width as i32,
-            format.coded_height as i32,
+            target_rect.left as i32,
+            target_rect.top as i32,
+            target_rect.right as i32,
+            target_rect.bottom as i32,
         ),
         ..Default::default()
     }
 }
 
-fn derive_output_layout(format: &CUVIDEOFORMAT) -> OutputLayout {
-    let coded_width = format.coded_width;
-    let coded_height = format.coded_height;
+fn validate_options(format: &CUVIDEOFORMAT, options: DecodeOptions) -> Result<(), DecodeError> {
+    if let Some(rect) = options.crop_rect {
+        if rect.left >= rect.right || rect.top >= rect.bottom {
+            return Err(DecodeError::InvalidInput(
+                "crop_rect must satisfy left < right and top < bottom".to_string(),
+            ));
+        }
+        if rect.right > format.coded_width || rect.bottom > format.coded_height {
+            return Err(DecodeError::InvalidInput(
+                "crop_rect must be inside coded dimensions".to_string(),
+            ));
+        }
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width % 2 != 0 || height % 2 != 0 {
+            return Err(DecodeError::InvalidInput(
+                "crop_rect width/height must be even".to_string(),
+            ));
+        }
+    }
+
+    if let Some((width, height)) = options.resize_dim {
+        if width == 0 || height == 0 {
+            return Err(DecodeError::InvalidInput(
+                "resize_dim must be non-zero".to_string(),
+            ));
+        }
+        if width % 2 != 0 || height % 2 != 0 {
+            return Err(DecodeError::InvalidInput(
+                "resize_dim width/height must be even".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn resolve_target_rect(
+    format: &CUVIDEOFORMAT,
+    options: DecodeOptions,
+) -> Result<DecodeRect, DecodeError> {
+    if let Some(rect) = options.crop_rect {
+        return Ok(rect);
+    }
 
     let left = format.display_area.left.max(0) as u32;
     let top = format.display_area.top.max(0) as u32;
     let mut right = format.display_area.right.max(0) as u32;
     let mut bottom = format.display_area.bottom.max(0) as u32;
-
-    if right == 0 || right > coded_width {
-        right = coded_width;
+    if right == 0 || right > format.coded_width {
+        right = format.coded_width;
     }
-    if bottom == 0 || bottom > coded_height {
-        bottom = coded_height;
+    if bottom == 0 || bottom > format.coded_height {
+        bottom = format.coded_height;
+    }
+    if right <= left || bottom <= top {
+        return Ok(DecodeRect {
+            left: 0,
+            top: 0,
+            right: format.coded_width,
+            bottom: format.coded_height,
+        });
     }
 
-    let (visible_left, visible_top, visible_width, visible_height) = if right > left && bottom > top
-    {
-        (left, top, right - left, bottom - top)
-    } else {
-        (0, 0, coded_width, coded_height)
-    };
+    Ok(DecodeRect {
+        left,
+        top,
+        right,
+        bottom,
+    })
+}
 
+fn resolve_target_size(
+    format: &CUVIDEOFORMAT,
+    options: DecodeOptions,
+    target_rect: &DecodeRect,
+) -> Result<(u32, u32), DecodeError> {
+    if let Some(dim) = options.resize_dim {
+        return Ok(dim);
+    }
+
+    let width = target_rect.right.saturating_sub(target_rect.left);
+    let height = target_rect.bottom.saturating_sub(target_rect.top);
+    if width == 0 || height == 0 {
+        return Ok((format.coded_width, format.coded_height));
+    }
+    Ok((width, height))
+}
+
+fn build_output_layout(target_width: u32, target_height: u32) -> OutputLayout {
     OutputLayout {
-        coded_width,
-        coded_height,
-        visible_left,
-        visible_top,
-        visible_width,
-        visible_height,
+        coded_width: target_width,
+        coded_height: target_height,
+        visible_left: 0,
+        visible_top: 0,
+        visible_width: target_width,
+        visible_height: target_height,
     }
 }
 
@@ -839,5 +1027,51 @@ fn bridge_from_user_data(user_data: *mut c_void) -> Option<&'static CallbackBrid
         // SAFETY: user_data was created from Box<CallbackBridge> in Decoder::new and
         // lives until Decoder drop.
         Some(unsafe { &*user_data.cast::<CallbackBridge>() })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_format(width: u32, height: u32) -> CUVIDEOFORMAT {
+        CUVIDEOFORMAT {
+            coded_width: width,
+            coded_height: height,
+            display_area: crate::sys::nvcuvid::CUVIDEOFORMAT__bindgen_ty_2 {
+                left: 0,
+                top: 0,
+                right: width as i32,
+                bottom: height as i32,
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn invalid_crop_rect_is_rejected() {
+        let format = sample_format(1920, 1080);
+        let options = DecodeOptions {
+            crop_rect: Some(DecodeRect {
+                left: 0,
+                top: 0,
+                right: 1919,
+                bottom: 1079,
+            }),
+            ..Default::default()
+        };
+        let error = validate_options(&format, options).unwrap_err();
+        assert!(matches!(error, DecodeError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn invalid_resize_is_rejected() {
+        let format = sample_format(1920, 1080);
+        let options = DecodeOptions {
+            resize_dim: Some((641, 359)),
+            ..Default::default()
+        };
+        let error = validate_options(&format, options).unwrap_err();
+        assert!(matches!(error, DecodeError::InvalidInput(_)));
     }
 }

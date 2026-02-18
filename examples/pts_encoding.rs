@@ -10,7 +10,7 @@ use image::GenericImageView;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
-        NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
+        NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
     EncodePictureParams, Encoder, EncoderInitParams,
 };
@@ -70,7 +70,6 @@ fn load_png_as_argb(
 
 /// PTS計算のための時間基準
 struct PtsCalculator {
-    start_time: SystemTime,
     frame_duration_us: u64, // マイクロ秒単位のフレーム間隔
     base_pts: u64,
 }
@@ -78,16 +77,14 @@ struct PtsCalculator {
 impl PtsCalculator {
     fn new(fps: u32) -> Self {
         let frame_duration_us = 1_000_000 / fps as u64; // マイクロ秒単位
-        let start_time = SystemTime::now();
 
         // 開始時刻をPTSベースとして使用
-        let base_pts = start_time
+        let base_pts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or(Duration::ZERO)
             .as_micros() as u64;
 
         Self {
-            start_time,
             frame_duration_us,
             base_pts,
         }
@@ -96,12 +93,6 @@ impl PtsCalculator {
     /// フレーム番号からPTSを計算
     fn get_pts_for_frame(&self, frame_index: u64) -> u64 {
         self.base_pts + (frame_index * self.frame_duration_us)
-    }
-
-    /// 実際の経過時間からPTSを計算
-    fn get_realtime_pts(&self) -> u64 {
-        let elapsed = self.start_time.elapsed().unwrap_or(Duration::ZERO);
-        self.base_pts + elapsed.as_micros() as u64
     }
 }
 
@@ -133,7 +124,6 @@ fn main() {
 
     let encode_guid = NV_ENC_CODEC_H264_GUID;
     let preset_guid = NV_ENC_PRESET_P1_GUID;
-    let profile_guid = NV_ENC_H264_PROFILE_HIGH_GUID;
     let buffer_format = NV_ENC_BUFFER_FORMAT_ARGB;
     let tuning_info = NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY;
 

@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{BufWriter, Write},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
@@ -10,7 +10,7 @@ use image::GenericImageView;
 use nvidia_video_codec_sdk::{
     sys::nvEncodeAPI::{
         NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_ARGB, NV_ENC_CODEC_H264_GUID,
-        NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
+        NV_ENC_PRESET_P1_GUID, NV_ENC_TUNING_INFO,
     },
     EncodePictureParams, Encoder, EncoderInitParams,
 };

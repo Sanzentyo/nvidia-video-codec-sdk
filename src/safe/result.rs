@@ -1,6 +1,7 @@
 //! Defines safe wrapper error types.
 
 use std::ffi::CStr;
+use std::fmt;
 
 use super::{api::ENCODE_API, encoder::Encoder};
 use crate::sys::nvEncodeAPI::NVENCSTATUS;
@@ -143,11 +144,10 @@ pub enum ErrorKind {
 ///
 /// This struct also contains a string with additional info
 /// when it is relevant and available.
-#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Error)]
-#[error("{kind:?}{display_suffix}", display_suffix = self.display_suffix())]
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct EncodeError {
     kind: ErrorKind,
-    string: Option<String>,
+    message: Option<String>,
 }
 
 impl EncodeError {
@@ -158,18 +158,90 @@ impl EncodeError {
     }
 
     /// Getter for the error string.
+    ///
+    /// This is a compatibility alias for [`EncodeError::message`].
     #[must_use]
     pub fn string(&self) -> Option<&str> {
-        self.string.as_deref()
+        self.message()
     }
 
-    fn display_suffix(&self) -> String {
-        self.string
-            .as_deref()
-            .map(|s| format!(": {s}"))
-            .unwrap_or_default()
+    /// Getter for the optional driver-provided error message.
+    #[must_use]
+    pub fn message(&self) -> Option<&str> {
+        self.message.as_deref()
+    }
+
+    fn from_kind(kind: ErrorKind) -> Self {
+        Self {
+            kind,
+            message: None,
+        }
+    }
+
+    fn with_message(kind: ErrorKind, message: impl Into<String>) -> Self {
+        let mut error = Self::from_kind(kind);
+        error.set_message(Some(message.into()));
+        error
+    }
+
+    fn set_message(&mut self, message: Option<String>) {
+        self.message = message.and_then(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        });
+    }
+
+    fn should_fetch_driver_message(kind: ErrorKind) -> bool {
+        // These statuses are primarily control-flow/retry signals.
+        // Fetching driver text here is usually not actionable.
+        !matches!(
+            kind,
+            ErrorKind::LockBusy
+                | ErrorKind::EncoderBusy
+                | ErrorKind::NeedMoreInput
+                | ErrorKind::OutOfMemory
+        )
+    }
+
+    fn fetch_driver_message(encoder: &Encoder) -> Option<String> {
+        // SAFETY: NVENC owns this pointer and it is valid for the life of the encoder session.
+        let raw = unsafe { (ENCODE_API.get_last_error_string)(encoder.ptr) };
+        if raw.is_null() {
+            return None;
+        }
+
+        // SAFETY: pointer is checked for null and points to a C string from NVENC.
+        let message = unsafe { CStr::from_ptr(raw) }
+            .to_string_lossy()
+            .into_owned();
+        let trimmed = message.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    }
+
+    pub(crate) fn new_invalid_param(message: impl Into<String>) -> Self {
+        Self::with_message(ErrorKind::InvalidParam, message)
     }
 }
+
+impl fmt::Display for EncodeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Some(message) = self.message() {
+            write!(f, "{:?}: {message}", self.kind)
+        } else {
+            write!(f, "{:?}", self.kind)
+        }
+    }
+}
+
+impl std::error::Error for EncodeError {}
 
 impl From<NVENCSTATUS> for ErrorKind {
     fn from(status: NVENCSTATUS) -> Self {
@@ -214,7 +286,8 @@ impl NVENCSTATUS {
     /// and all other variants are mapped to the corresponding variant
     /// in [`ErrorKind`]. The error type is [`EncodeError`] which has
     /// a kind and an optional `String` which might contain additional
-    /// information about the error.
+    /// information about the error. The driver message is fetched only for
+    /// non-transient error kinds.
     ///
     /// # Errors
     ///
@@ -241,20 +314,9 @@ impl NVENCSTATUS {
     /// ```
     pub fn result(self, encoder: &Encoder) -> Result<(), EncodeError> {
         self.result_without_string().map_err(|mut err| {
-            err.string = match err.kind {
-                // Avoid getting the string if it is not needed.
-                ErrorKind::LockBusy
-                | ErrorKind::EncoderBusy
-                | ErrorKind::NeedMoreInput
-                | ErrorKind::OutOfMemory => None,
-                // Otherwise allocate an owned `String` with the error.
-                _ => Some(
-                    unsafe { CStr::from_ptr((ENCODE_API.get_last_error_string)(encoder.ptr)) }
-                        .to_string_lossy()
-                        .to_string(),
-                ),
+            if EncodeError::should_fetch_driver_message(err.kind) {
+                err.set_message(EncodeError::fetch_driver_message(encoder));
             }
-            .and_then(|s| if s.is_empty() { None } else { Some(s) });
             err
         })
     }
@@ -276,10 +338,7 @@ impl NVENCSTATUS {
     pub fn result_without_string(self) -> Result<(), EncodeError> {
         match self {
             Self::NV_ENC_SUCCESS => Ok(()),
-            err => Err(EncodeError {
-                kind: err.into(),
-                string: None,
-            }),
+            err => Err(EncodeError::from_kind(err.into())),
         }
     }
 }
