@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use bytes::Bytes;
-use rtc_rtp::{header::Header, packet::Packet};
+use rtc::rtp::{header::Header, packet::Packet};
 
 /// RTP packet ordering strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -440,7 +440,7 @@ fn rgb_to_argb(rgb: &[u8]) -> Vec<u8> {
 }
 
 fn maybe_shuffle_for_reorder_test(
-    packets: &mut [rtc_rtp::packet::Packet],
+    packets: &mut [rtc::rtp::packet::Packet],
     access_unit_index: usize,
 ) {
     if access_unit_index % 2 == 1 && packets.len() >= 3 {

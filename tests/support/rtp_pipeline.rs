@@ -1,6 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
 use bytes::{Bytes, BytesMut};
-use rtc_rtp::{
+use rtc::rtp::{
     codec::{
         av1::{Av1Depacketizer, Av1Payloader},
         h264::H264Payloader,
