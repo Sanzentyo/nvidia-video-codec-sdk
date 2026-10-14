@@ -36,7 +36,13 @@
     missing_copy_implementations
 )]
 
+#[cfg(all(windows, feature = "d3d12"))]
+pub mod d3d12;
+#[cfg(feature = "runtime-nvenc")]
+pub mod runtime;
+#[cfg(feature = "cuda")]
 pub mod safe;
 pub mod sys;
 
+#[cfg(feature = "cuda")]
 pub use safe::*;

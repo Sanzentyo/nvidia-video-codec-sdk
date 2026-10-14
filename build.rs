@@ -56,7 +56,7 @@ const LIBRARY_CANDIDATES: [&str; 11] = [
 ];
 
 fn main() {
-    if cfg!(feature = "ci-check") {
+    if !cfg!(feature = "cuda") || cfg!(feature = "ci-check") {
         return;
     }
     rerun_if_changed();
