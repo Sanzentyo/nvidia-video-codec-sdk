@@ -18,3 +18,11 @@ The build script will try to automatically locate your NVIDIA Video Codec SDK in
 You can help it by setting the environment variable `NVIDIA_VIDEO_CODEC_SDK_PATH` to the directory containing the library files. 
 - `nvEncodeAPI.lib` and `nvcuvid.lib` on Windows,
 - `libnvidia-encode.so` and `libnvcuvid.so` on Linux.
+## External D3D12 encoding policies
+
+The `d3d12` feature exposes explicit `EncoderConfig::H264` and
+`EncoderConfig::HevcLossless` policies. HEVC uses Main8/NV12, lossless tuning and
+QP0 without bitrate/VBV constraints. Construction checks the selected codec,
+profile, input format and required lossless capability on the actual device.
+Both policies use the same thread-affine registration, producer-fence and
+physical-retirement owner. Packets report their codec and own Annex-B bytes.

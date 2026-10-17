@@ -129,6 +129,13 @@ fn check(operation: &'static str, status: NVENCSTATUS) -> Result<(), LoadError> 
 
 fn validate_encoder_callbacks(table: &NV_ENCODE_API_FUNCTION_LIST) -> Result<(), LoadError> {
     let callbacks = [
+        ("nvEncGetEncodeGUIDs", table.nvEncGetEncodeGUIDs.is_some()),
+        (
+            "nvEncGetEncodeProfileGUIDs",
+            table.nvEncGetEncodeProfileGUIDs.is_some(),
+        ),
+        ("nvEncGetInputFormats", table.nvEncGetInputFormats.is_some()),
+        ("nvEncGetEncodeCaps", table.nvEncGetEncodeCaps.is_some()),
         (
             "nvEncOpenEncodeSessionEx",
             table.nvEncOpenEncodeSessionEx.is_some(),

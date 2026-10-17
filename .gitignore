@@ -1,4 +1,7 @@
 /target
+/Logs/
+/Artifacts/
+/Builds/
 /Cargo.lock
 .vscode/
 *.bin

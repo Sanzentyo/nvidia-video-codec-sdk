@@ -8,18 +8,16 @@ use crate::{
     runtime::{LoadError, RuntimeNvenc},
     sys::nvEncodeAPI::{
         NVENCAPI_VERSION, NVENCSTATUS, NV_ENCODE_API_FUNCTION_LIST, NV_ENC_BUFFER_FORMAT,
-        NV_ENC_BUFFER_USAGE, NV_ENC_CODEC_H264_GUID, NV_ENC_CONFIG_VER, NV_ENC_DEVICE_TYPE,
-        NV_ENC_FENCE_POINT_D3D12_VER, NV_ENC_H264_PROFILE_HIGH_GUID, NV_ENC_INITIALIZE_PARAMS,
-        NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_INPUT_PTR, NV_ENC_INPUT_RESOURCE_D3D12,
-        NV_ENC_INPUT_RESOURCE_D3D12_VER, NV_ENC_INPUT_RESOURCE_TYPE, NV_ENC_LOCK_BITSTREAM,
-        NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_MAP_INPUT_RESOURCE, NV_ENC_MAP_INPUT_RESOURCE_VER,
-        NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER,
-        NV_ENC_OUTPUT_RESOURCE_D3D12, NV_ENC_OUTPUT_RESOURCE_D3D12_VER, NV_ENC_PARAMS_RC_MODE,
-        NV_ENC_PIC_FLAGS, NV_ENC_PIC_PARAMS, NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT,
-        NV_ENC_PIC_TYPE, NV_ENC_PRESET_CONFIG, NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P3_GUID,
-        NV_ENC_REGISTERED_PTR, NV_ENC_REGISTER_RESOURCE, NV_ENC_REGISTER_RESOURCE_VER,
-        NV_ENC_TUNING_INFO, NV_ENC_VUI_COLOR_PRIMARIES, NV_ENC_VUI_MATRIX_COEFFS,
-        NV_ENC_VUI_TRANSFER_CHARACTERISTIC, NV_ENC_VUI_VIDEO_FORMAT,
+        NV_ENC_BUFFER_USAGE, NV_ENC_CONFIG_VER, NV_ENC_DEVICE_TYPE, NV_ENC_FENCE_POINT_D3D12_VER,
+        NV_ENC_INITIALIZE_PARAMS, NV_ENC_INITIALIZE_PARAMS_VER, NV_ENC_INPUT_PTR,
+        NV_ENC_INPUT_RESOURCE_D3D12, NV_ENC_INPUT_RESOURCE_D3D12_VER, NV_ENC_INPUT_RESOURCE_TYPE,
+        NV_ENC_LOCK_BITSTREAM, NV_ENC_LOCK_BITSTREAM_VER, NV_ENC_MAP_INPUT_RESOURCE,
+        NV_ENC_MAP_INPUT_RESOURCE_VER, NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS,
+        NV_ENC_OPEN_ENCODE_SESSION_EX_PARAMS_VER, NV_ENC_OUTPUT_RESOURCE_D3D12,
+        NV_ENC_OUTPUT_RESOURCE_D3D12_VER, NV_ENC_PIC_FLAGS, NV_ENC_PIC_PARAMS,
+        NV_ENC_PIC_PARAMS_VER, NV_ENC_PIC_STRUCT, NV_ENC_PIC_TYPE, NV_ENC_PRESET_CONFIG,
+        NV_ENC_PRESET_CONFIG_VER, NV_ENC_PRESET_P3_GUID, NV_ENC_REGISTERED_PTR,
+        NV_ENC_REGISTER_RESOURCE, NV_ENC_REGISTER_RESOURCE_VER,
     },
 };
 use std::{
@@ -71,6 +69,15 @@ pub enum EncodeError {
     /// Completion was not observed; the encoder retains the submission.
     #[error("NVENC completion deadline; resources remain retained")]
     CompletionDeadline,
+    /// Pre-configuration admission failed and its one physical close also failed.
+    #[error("NVENC initialization failed: {cause}; session close failed: {cleanup}")]
+    InitializationCleanup {
+        /// Original admission or read-only query failure.
+        #[source]
+        cause: Box<EncodeError>,
+        /// Close failure; the complete session remains retained.
+        cleanup: Box<EncodeError>,
+    },
 }
 
 /// Positive external producer fence point. `UINT64_MAX` is device removal.
@@ -119,56 +126,10 @@ impl TimestampMicros {
     }
 }
 
-/// Immutable H.264 High/P3/ULL/CBR, IP-only, BT.709 limited-range configuration.
-#[derive(Debug, Copy, Clone)]
-pub struct H264Config {
-    width: u32,
-    height: u32,
-    fps: u32,
-    bitrate: u32,
-    capacity: u32,
-}
-impl H264Config {
-    /// Validates even NV12 dimensions, frame rate, bitrate, and output capacity.
-    /// # Errors
-    /// Rejects zero/odd dimensions, fps outside 1..=120, bitrate outside
-    /// 1..=60,000,000 and compressed output allocation above 32 MiB.
-    pub fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self, EncodeError> {
-        if width == 0 || height == 0 || !width.is_multiple_of(2) || !height.is_multiple_of(2) {
-            return Err(EncodeError::Contract(
-                "NV12 dimensions must be positive and even",
-            ));
-        }
-        if !(1..=120).contains(&fps) || !(1..=60_000_000).contains(&bitrate) {
-            return Err(EncodeError::Contract("frame rate or bitrate out of bounds"));
-        }
-        let capacity = u64::from(width)
-            .checked_mul(u64::from(height))
-            .and_then(|bytes| bytes.checked_mul(3))
-            .ok_or(EncodeError::Contract("capacity overflow"))?;
-        if capacity > 32 * 1024 * 1024 {
-            return Err(EncodeError::Contract("compressed output allocation bound"));
-        }
-        Ok(Self {
-            width,
-            height,
-            fps,
-            bitrate,
-            capacity: u32::try_from(capacity)
-                .map_err(|_| EncodeError::Contract("capacity overflow"))?,
-        })
-    }
-    /// Width of the encoded NV12 image.
-    #[must_use]
-    pub const fn width(self) -> u32 {
-        self.width
-    }
-    /// Height of the encoded NV12 image.
-    #[must_use]
-    pub const fn height(self) -> u32 {
-        self.height
-    }
-}
+mod capabilities;
+mod config;
+
+pub use config::{Codec, EncoderCapabilities, EncoderConfig, H264Config, HevcLosslessConfig};
 
 /// Owned compressed packet, independent of the encoder's mapped output.
 #[derive(Debug)]
@@ -176,9 +137,10 @@ pub struct EncodedAccessUnit {
     bytes: Vec<u8>,
     timestamp: TimestampMicros,
     idr: bool,
+    codec: Codec,
 }
 impl EncodedAccessUnit {
-    /// Borrows Annex-B H.264 data.
+    /// Borrows Annex-B data in the packet's declared codec.
     #[must_use]
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
@@ -192,6 +154,11 @@ impl EncodedAccessUnit {
     #[must_use]
     pub const fn is_idr(&self) -> bool {
         self.idr
+    }
+    /// Coding syntax of the owned access unit.
+    #[must_use]
+    pub const fn codec(&self) -> Codec {
+        self.codec
     }
 }
 
@@ -252,7 +219,8 @@ struct Inner {
     output_mapped: NV_ENC_INPUT_PTR,
     input_wrapper: NV_ENC_INPUT_RESOURCE_D3D12,
     output_wrapper: NV_ENC_OUTPUT_RESOURCE_D3D12,
-    config: H264Config,
+    config: EncoderConfig,
+    capabilities: Option<EncoderCapabilities>,
     submission_phase: SubmissionPhase,
     retirement_phase: RetirementPhase,
     output_value: u64,
@@ -304,14 +272,14 @@ impl D3d12Encoder {
         device: ID3D12Device,
         input: ID3D12Resource,
         producer: ID3D12Fence,
-        config: H264Config,
+        config: EncoderConfig,
     ) -> Result<Self, EncodeError> {
         // SAFETY: GetDesc/GetDevice operate on live owned COM references only.
         let desc = unsafe { input.GetDesc() };
         if desc.Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE2D
             || desc.Format != DXGI_FORMAT_NV12
-            || desc.Width != u64::from(config.width)
-            || desc.Height != config.height
+            || desc.Width != u64::from(config.width())
+            || desc.Height != config.height()
             || desc.DepthOrArraySize != 1
             || desc.MipLevels != 1
             || desc.SampleDesc.Count != 1
@@ -342,6 +310,7 @@ impl D3d12Encoder {
                 input_wrapper: NV_ENC_INPUT_RESOURCE_D3D12::default(),
                 output_wrapper: NV_ENC_OUTPUT_RESOURCE_D3D12::default(),
                 config,
+                capabilities: None,
                 submission_phase: SubmissionPhase::Idle,
                 retirement_phase: RetirementPhase::Open,
                 output_value: 0,
@@ -363,6 +332,18 @@ impl D3d12Encoder {
             return Err(error);
         }
         Ok(result)
+    }
+
+    /// Returns actual driver capability facts from this session's construction.
+    /// # Errors
+    /// Rejects a closed or incompletely initialized owner.
+    pub fn capabilities(&self) -> Result<EncoderCapabilities, EncodeError> {
+        self.inner
+            .as_ref()
+            .and_then(|inner| inner.capabilities)
+            .ok_or(EncodeError::Contract(
+                "encoder capabilities are not available",
+            ))
     }
 
     /// Encodes after the producer's increasing fence point, without CPU image readback.
@@ -503,6 +484,12 @@ impl Inner {
         if self.session.is_null() {
             return Err(EncodeError::Contract("driver returned null session"));
         }
+        // Queries/admission cannot register or submit GPU work. A definite
+        // rejection closes this merely opened session exactly once. Configure
+        // and registration failures below keep their existing uncertain owner.
+        let query = self.query_capabilities();
+        let capabilities = config::admit_or_close(query, self.config, || self.close())?;
+        self.capabilities = Some(capabilities);
         self.configure()?;
         self.create_output()?;
         self.register_resources()
@@ -520,48 +507,25 @@ impl Inner {
                 .nvEncGetEncodePresetConfigEx
                 .ok_or(EncodeError::Contract("missing preset"))?(
                 self.session,
-                NV_ENC_CODEC_H264_GUID,
+                self.config.guid(),
                 NV_ENC_PRESET_P3_GUID,
-                NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
+                self.config.tuning(),
                 &raw mut preset,
             )
         })?;
-        let mut config = preset.presetCfg;
-        config.profileGUID = NV_ENC_H264_PROFILE_HIGH_GUID;
-        config.gopLength = 60;
-        config.frameIntervalP = 1;
-        config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_CBR;
-        config.rcParams.averageBitRate = self.config.bitrate;
-        config.rcParams.maxBitRate = self.config.bitrate;
-        config.rcParams.vbvBufferSize = self.config.bitrate / self.config.fps;
-        config.rcParams.vbvInitialDelay = config.rcParams.vbvBufferSize;
-        config.rcParams.set_enableLookahead(0);
-        // SAFETY: encodeGUID selects H.264, so this is the active union member.
-        let h264 = unsafe { &mut config.encodeCodecConfig.h264Config };
-        h264.idrPeriod = 60;
-        h264.set_repeatSPSPPS(1);
-        h264.chromaFormatIDC = 1;
-        let vui = &mut h264.h264VUIParameters;
-        vui.videoSignalTypePresentFlag = 1;
-        vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT::NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
-        vui.videoFullRangeFlag = 0;
-        vui.colourDescriptionPresentFlag = 1;
-        vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
-        vui.transferCharacteristics =
-            NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709;
-        vui.colourMatrix = NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709;
+        let mut config = self.config.apply(preset.presetCfg);
         let mut init = NV_ENC_INITIALIZE_PARAMS {
             version: NV_ENC_INITIALIZE_PARAMS_VER,
-            encodeGUID: NV_ENC_CODEC_H264_GUID,
+            encodeGUID: self.config.guid(),
             presetGUID: NV_ENC_PRESET_P3_GUID,
-            tuningInfo: NV_ENC_TUNING_INFO::NV_ENC_TUNING_INFO_ULTRA_LOW_LATENCY,
-            maxEncodeWidth: self.config.width,
-            encodeWidth: self.config.width,
-            darWidth: self.config.width,
-            maxEncodeHeight: self.config.height,
-            encodeHeight: self.config.height,
-            darHeight: self.config.height,
-            frameRateNum: self.config.fps,
+            tuningInfo: self.config.tuning(),
+            maxEncodeWidth: self.config.width(),
+            encodeWidth: self.config.width(),
+            darWidth: self.config.width(),
+            maxEncodeHeight: self.config.height(),
+            encodeHeight: self.config.height(),
+            darHeight: self.config.height(),
+            frameRateNum: self.config.fps(),
             frameRateDen: 1,
             enablePTD: 1,
             bufferFormat: NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_NV12,
@@ -588,7 +552,7 @@ impl Inner {
         };
         let desc = D3D12_RESOURCE_DESC {
             Dimension: D3D12_RESOURCE_DIMENSION_BUFFER,
-            Width: u64::from(self.config.capacity),
+            Width: u64::from(self.config.capacity()),
             Height: 1,
             DepthOrArraySize: 1,
             MipLevels: 1,
@@ -621,8 +585,8 @@ impl Inner {
             version: NV_ENC_REGISTER_RESOURCE_VER,
             resourceType: NV_ENC_INPUT_RESOURCE_TYPE::NV_ENC_INPUT_RESOURCE_TYPE_DIRECTX,
             resourceToRegister: self.input.as_raw(),
-            width: self.config.width,
-            height: self.config.height,
+            width: self.config.width(),
+            height: self.config.height(),
             bufferFormat: NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_NV12,
             bufferUsage: NV_ENC_BUFFER_USAGE::NV_ENC_INPUT_IMAGE,
             ..Default::default()
@@ -646,7 +610,7 @@ impl Inner {
                 .as_ref()
                 .ok_or(EncodeError::Contract("missing output"))?
                 .as_raw(),
-            width: self.config.capacity,
+            width: self.config.capacity(),
             height: 1,
             bufferFormat: NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_U8,
             bufferUsage: NV_ENC_BUFFER_USAGE::NV_ENC_OUTPUT_BITSTREAM,
@@ -758,10 +722,10 @@ impl Inner {
             inputBuffer: ptr::from_mut(&mut self.input_wrapper).cast(),
             outputBitstream: ptr::from_mut(&mut self.output_wrapper).cast(),
             bufferFmt: NV_ENC_BUFFER_FORMAT::NV_ENC_BUFFER_FORMAT_NV12,
-            inputWidth: self.config.width,
-            inputHeight: self.config.height,
+            inputWidth: self.config.width(),
+            inputHeight: self.config.height(),
             inputTimeStamp: timestamp.get(),
-            inputDuration: u64::from(1_000_000 / self.config.fps),
+            inputDuration: u64::from(1_000_000 / self.config.fps()),
             pictureStruct: NV_ENC_PIC_STRUCT::NV_ENC_PIC_STRUCT_FRAME,
             ..Default::default()
         };
@@ -806,7 +770,7 @@ impl Inner {
         self.submission_phase = SubmissionPhase::Locked;
         if locked.bitstreamBufferPtr.is_null()
             || locked.bitstreamSizeInBytes == 0
-            || locked.bitstreamSizeInBytes > self.config.capacity
+            || locked.bitstreamSizeInBytes > self.config.capacity()
             || locked.bitstreamSizeInBytes > 8 * 1024 * 1024
             || locked.outputTimeStamp != timestamp.get()
         {
@@ -844,6 +808,7 @@ impl Inner {
             bytes,
             timestamp,
             idr,
+            codec: self.config.codec(),
         })
     }
     fn wait_output(&self) -> Result<(), EncodeError> {
