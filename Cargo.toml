@@ -29,6 +29,7 @@ libloading = { version = "0.9", optional = true }
 thiserror = "2.0.18"
 
 [dev-dependencies]
+windows = { version = "0.62.2", features = ["Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
 vulkano = "0.35.2"
 libc = "0.2.182"
 memmap2 = "0.9.10"

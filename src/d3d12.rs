@@ -128,6 +128,8 @@ impl TimestampMicros {
 
 mod capabilities;
 mod config;
+#[cfg(test)]
+mod hardware_tests;
 
 pub use config::{Codec, EncoderCapabilities, EncoderConfig, H264Config, HevcLosslessConfig};
 
