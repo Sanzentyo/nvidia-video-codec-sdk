@@ -38,7 +38,7 @@ impl ImageConfig {
             .checked_mul(u64::from(height))
             .and_then(|v| v.checked_mul(3))
             .ok_or(EncodeError::Contract("capacity overflow"))?;
-        if capacity > 32 * 1024 * 1024 {
+        if capacity > 64 * 1024 * 1024 {
             return Err(EncodeError::Contract("compressed output allocation bound"));
         }
         Ok(Self {
@@ -58,7 +58,7 @@ pub struct H264Config {
 }
 impl H264Config {
     /// Validates even NV12 dimensions, fps1..=120, bitrate1..=60000000 and
-    /// compressed output allocation no greater than32MiB.
+    /// compressed output allocation no greater than64MiB.
     /// # Errors
     /// Rejects an invalid dimension, frame rate, bitrate or allocation size.
     pub fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Result<Self, EncodeError> {
@@ -88,7 +88,7 @@ pub struct HevcLosslessConfig {
     image: ImageConfig,
 }
 impl HevcLosslessConfig {
-    /// Validates even NV12 dimensions, fps1..=120 and output allocation<=32MiB.
+    /// Validates even NV12 dimensions, fps1..=120 and output allocation<=64MiB.
     /// # Errors
     /// Rejects an invalid dimension, frame rate or allocation size.
     pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
@@ -381,12 +381,21 @@ mod tests {
             (2, 2, 0),
             (2, 2, 121),
             (u32::MAX - 1, u32::MAX - 1, 15),
-            (4096, 4096, 15),
+            (8192, 4096, 15),
         ] {
             assert!(HevcLosslessConfig::new(w, h, f).is_err());
         }
         assert!(H264Config::new(2, 2, 15, 0).is_err());
         assert!(HevcLosslessConfig::new(1152, 1664, 15).is_ok());
+        let large = EncoderConfig::HevcLossless(
+            HevcLosslessConfig::new(4096, 4096, 15).expect("bounded square"),
+        );
+        assert_eq!(large.capacity(), 3 * 4096 * 4096);
+        let edge = EncoderConfig::HevcLossless(
+            HevcLosslessConfig::new(8192, 2730, 15).expect("largest admitted row count"),
+        );
+        assert_eq!(edge.capacity(), 3 * 8192 * 2730);
+        assert!(HevcLosslessConfig::new(8192, 2732, 15).is_err());
     }
     #[test]
     fn every_required_capability_is_enforced_without_another_policy() {
