@@ -15,6 +15,14 @@ pub enum Codec {
     /// H.265/HEVC Annex-B.
     Hevc,
 }
+/// Quantization range signaled in the encoded video usability information.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ColorRange {
+    /// Studio-swing luma and chroma levels.
+    Limited,
+    /// Full code-value range.
+    Full,
+}
 #[derive(Debug, Clone, Copy)]
 struct ImageConfig {
     width: u32,
@@ -81,20 +89,32 @@ impl H264Config {
         self.image.height
     }
 }
-/// Immutable HEVC Main8/NV12/P3/lossless, IP-only, BT.709 limited-range policy.
+/// Immutable HEVC Main8/NV12/P3/lossless, IP-only, BT.709 with an explicit color range.
 /// No bitrate or VBV constraint is imposed. Driver capability is required.
 #[derive(Debug, Clone, Copy)]
 pub struct HevcLosslessConfig {
     image: ImageConfig,
+    color_range: ColorRange,
 }
 impl HevcLosslessConfig {
     /// Validates even NV12 dimensions, fps1..=120 and output allocation<=64MiB.
     /// # Errors
     /// Rejects an invalid dimension, frame rate or allocation size.
-    pub fn new(width: u32, height: u32, fps: u32) -> Result<Self, EncodeError> {
+    pub fn new(
+        width: u32,
+        height: u32,
+        fps: u32,
+        color_range: ColorRange,
+    ) -> Result<Self, EncodeError> {
         Ok(Self {
             image: ImageConfig::new(width, height, fps)?,
+            color_range,
         })
+    }
+    /// Immutable quantization range written to the HEVC VUI.
+    #[must_use]
+    pub const fn color_range(self) -> ColorRange {
+        self.color_range
     }
 }
 /// Explicit immutable policy consumed by the external D3D12 encoder.
@@ -167,9 +187,9 @@ impl EncoderConfig {
                 h264.idrPeriod = 60;
                 h264.set_repeatSPSPPS(1);
                 h264.chromaFormatIDC = 1;
-                set_vui(&mut h264.h264VUIParameters);
+                set_vui(&mut h264.h264VUIParameters, ColorRange::Limited);
             }
-            Self::HevcLossless(_) => {
+            Self::HevcLossless(c) => {
                 config.rcParams.rateControlMode = NV_ENC_PARAMS_RC_MODE::NV_ENC_PARAMS_RC_CONSTQP;
                 config.rcParams.constQP = NV_ENC_QP {
                     qpInterP: 0,
@@ -195,16 +215,16 @@ impl EncoderConfig {
                 hevc.set_chromaFormatIDC(1);
                 hevc.inputBitDepth = NV_ENC_BIT_DEPTH::NV_ENC_BIT_DEPTH_8;
                 hevc.outputBitDepth = NV_ENC_BIT_DEPTH::NV_ENC_BIT_DEPTH_8;
-                set_vui(&mut hevc.hevcVUIParameters);
+                set_vui(&mut hevc.hevcVUIParameters, c.color_range);
             }
         }
         config
     }
 }
-fn set_vui(vui: &mut NV_ENC_CONFIG_H264_VUI_PARAMETERS) {
+fn set_vui(vui: &mut NV_ENC_CONFIG_H264_VUI_PARAMETERS, range: ColorRange) {
     vui.videoSignalTypePresentFlag = 1;
     vui.videoFormat = NV_ENC_VUI_VIDEO_FORMAT::NV_ENC_VUI_VIDEO_FORMAT_UNSPECIFIED;
-    vui.videoFullRangeFlag = 0;
+    vui.videoFullRangeFlag = u32::from(range == ColorRange::Full);
     vui.colourDescriptionPresentFlag = 1;
     vui.colourPrimaries = NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709;
     vui.transferCharacteristics =
@@ -265,6 +285,47 @@ impl EncoderCapabilities {
 mod tests {
     use super::*;
     #[test]
+    fn hevc_vui_uses_the_requested_range_without_changing_lossless_policy() {
+        for (range, full_range_flag) in [(ColorRange::Limited, 0), (ColorRange::Full, 1)] {
+            let policy = HevcLosslessConfig::new(1280, 720, 30, range).expect("HEVC");
+            assert_eq!(policy.color_range(), range);
+            let config = EncoderConfig::HevcLossless(policy).apply(NV_ENC_CONFIG::default());
+            assert_eq!(config.rcParams.constQP.qpIntra, 0);
+            assert_eq!(config.rcParams.constQP.qpInterP, 0);
+            assert_eq!(config.rcParams.averageBitRate, 0);
+            // SAFETY: the HEVC policy selected and initialized this union member.
+            let vui = unsafe { config.encodeCodecConfig.hevcConfig.hevcVUIParameters };
+            assert_eq!(vui.videoSignalTypePresentFlag, 1);
+            assert_eq!(vui.videoFullRangeFlag, full_range_flag);
+            assert_eq!(vui.colourDescriptionPresentFlag, 1);
+            assert_eq!(
+                vui.colourPrimaries,
+                NV_ENC_VUI_COLOR_PRIMARIES::NV_ENC_VUI_COLOR_PRIMARIES_BT709
+            );
+            assert_eq!(
+                vui.transferCharacteristics,
+                NV_ENC_VUI_TRANSFER_CHARACTERISTIC::NV_ENC_VUI_TRANSFER_CHARACTERISTIC_BT709
+            );
+            assert_eq!(
+                vui.colourMatrix,
+                NV_ENC_VUI_MATRIX_COEFFS::NV_ENC_VUI_MATRIX_COEFFS_BT709
+            );
+        }
+        let policy = EncoderConfig::H264(H264Config::new(1280, 720, 30, 8_000_000).expect("H264"));
+        let config = policy.apply(NV_ENC_CONFIG::default());
+        // SAFETY: the H.264 policy selected and initialized this union member.
+        assert_eq!(
+            unsafe {
+                config
+                    .encodeCodecConfig
+                    .h264Config
+                    .h264VUIParameters
+                    .videoFullRangeFlag
+            },
+            0
+        );
+    }
+    #[test]
     fn preset_vui_fields_outside_the_color_policy_are_preserved() {
         let mut vui = NV_ENC_CONFIG_H264_VUI_PARAMETERS {
             chromaSampleLocationFlag: 1,
@@ -275,7 +336,7 @@ mod tests {
             timeScale: 60000,
             ..Default::default()
         };
-        set_vui(&mut vui);
+        set_vui(&mut vui, ColorRange::Limited);
         assert_eq!(
             [
                 vui.chromaSampleLocationFlag,
@@ -296,8 +357,9 @@ mod tests {
     }
     #[test]
     fn definite_admission_failures_close_once_and_preserve_both_errors() {
-        let policy =
-            EncoderConfig::HevcLossless(HevcLosslessConfig::new(1152, 576, 15).expect("config"));
+        let policy = EncoderConfig::HevcLossless(
+            HevcLosslessConfig::new(1152, 576, 15, ColorRange::Limited).expect("config"),
+        );
         let good = EncoderCapabilities {
             codec_supported: true,
             profile_supported: true,
@@ -331,7 +393,9 @@ mod tests {
     #[test]
     fn explicit_policies_select_distinct_guid_tuning_profile_and_active_config() {
         let h = EncoderConfig::H264(H264Config::new(1088, 1088, 15, 32_000_000).expect("H264"));
-        let v = EncoderConfig::HevcLossless(HevcLosslessConfig::new(1152, 576, 15).expect("HEVC"));
+        let v = EncoderConfig::HevcLossless(
+            HevcLosslessConfig::new(1152, 576, 15, ColorRange::Limited).expect("HEVC"),
+        );
         assert_eq!(h.guid(), NV_ENC_CODEC_H264_GUID);
         assert_eq!(h.profile(), NV_ENC_H264_PROFILE_HIGH_GUID);
         assert_eq!(
@@ -383,24 +447,26 @@ mod tests {
             (u32::MAX - 1, u32::MAX - 1, 15),
             (8192, 4096, 15),
         ] {
-            assert!(HevcLosslessConfig::new(w, h, f).is_err());
+            assert!(HevcLosslessConfig::new(w, h, f, ColorRange::Limited).is_err());
         }
         assert!(H264Config::new(2, 2, 15, 0).is_err());
-        assert!(HevcLosslessConfig::new(1152, 1664, 15).is_ok());
+        assert!(HevcLosslessConfig::new(1152, 1664, 15, ColorRange::Limited).is_ok());
         let large = EncoderConfig::HevcLossless(
-            HevcLosslessConfig::new(4096, 4096, 15).expect("bounded square"),
+            HevcLosslessConfig::new(4096, 4096, 15, ColorRange::Limited).expect("bounded square"),
         );
         assert_eq!(large.capacity(), 3 * 4096 * 4096);
         let edge = EncoderConfig::HevcLossless(
-            HevcLosslessConfig::new(8192, 2730, 15).expect("largest admitted row count"),
+            HevcLosslessConfig::new(8192, 2730, 15, ColorRange::Limited)
+                .expect("largest admitted row count"),
         );
         assert_eq!(edge.capacity(), 3 * 8192 * 2730);
-        assert!(HevcLosslessConfig::new(8192, 2732, 15).is_err());
+        assert!(HevcLosslessConfig::new(8192, 2732, 15, ColorRange::Limited).is_err());
     }
     #[test]
     fn every_required_capability_is_enforced_without_another_policy() {
-        let c =
-            EncoderConfig::HevcLossless(HevcLosslessConfig::new(1152, 576, 15).expect("config"));
+        let c = EncoderConfig::HevcLossless(
+            HevcLosslessConfig::new(1152, 576, 15, ColorRange::Limited).expect("config"),
+        );
         let good = EncoderCapabilities {
             codec_supported: true,
             profile_supported: true,

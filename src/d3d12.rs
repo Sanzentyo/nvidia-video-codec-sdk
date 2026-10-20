@@ -131,7 +131,9 @@ mod config;
 #[cfg(test)]
 mod hardware_tests;
 
-pub use config::{Codec, EncoderCapabilities, EncoderConfig, H264Config, HevcLosslessConfig};
+pub use config::{
+    Codec, ColorRange, EncoderCapabilities, EncoderConfig, H264Config, HevcLosslessConfig,
+};
 
 /// Owned compressed packet, independent of the encoder's mapped output.
 #[derive(Debug)]

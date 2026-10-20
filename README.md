@@ -26,3 +26,9 @@ QP0 without bitrate/VBV constraints. Construction checks the selected codec,
 profile, input format and required lossless capability on the actual device.
 Both policies use the same thread-affine registration, producer-fence and
 physical-retirement owner. Packets report their codec and own Annex-B bytes.
+
+`HevcLosslessConfig::new(width, height, fps, ColorRange::Full)` explicitly
+selects full-range BT.709 VUI; use `ColorRange::Limited` for limited-range VUI.
+H.264 retains its explicit limited-range policy. The range is immutable and
+available through `HevcLosslessConfig::color_range()`. This signals the input's
+range; it does not rescale pixels or establish end-to-end decoder sample fidelity.

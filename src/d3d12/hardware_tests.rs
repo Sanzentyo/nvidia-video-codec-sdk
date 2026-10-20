@@ -48,7 +48,12 @@ fn hardware_lossless_session_initializes_and_closes() -> Result<(), EncodeError>
             device,
             input,
             producer,
-            EncoderConfig::HevcLossless(HevcLosslessConfig::new(1152, 576, 15)?),
+            EncoderConfig::HevcLossless(HevcLosslessConfig::new(
+                1152,
+                576,
+                15,
+                ColorRange::Limited,
+            )?),
         )?
     };
     assert_eq!(encoder.capabilities()?.lossless_supported, Some(true));
